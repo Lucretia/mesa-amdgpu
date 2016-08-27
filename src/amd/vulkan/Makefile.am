@@ -122,8 +122,11 @@ nodist_EXTRA_libvulkan_radeon_la_SOURCES = dummy.cpp
 libvulkan_radeon_la_SOURCES = $(VULKAN_GEM_FILES)
 
 VULKAN_ENTRYPOINT_CPPFLAGS = \
-	-DVK_USE_PLATFORM_XCB_KHR \
+	-DVK_USE_PLATFORM_XCB_KHR
+if HAVE_PLATFORM_WAYLAND
+VULKAN_ENTRYPOINT_CPPFLAGS += \
 	-DVK_USE_PLATFORM_WAYLAND_KHR
+endif
 
 radv_entrypoints.h : radv_entrypoints_gen.py $(vulkan_include_HEADERS)
 	$(AM_V_GEN)$(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
