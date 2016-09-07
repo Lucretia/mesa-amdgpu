@@ -104,6 +104,7 @@
 #define PKT3_INDIRECT_BUFFER_CONST             0x33
 #define PKT3_STRMOUT_BUFFER_UPDATE             0x34
 #define PKT3_DRAW_INDEX_OFFSET_2               0x35
+#define PKT3_DRAW_PREAMBLE                     0x36 /* new on CIK, required on GFX7.2 and later */
 #define PKT3_WRITE_DATA                        0x37
 #define   R_370_CONTROL				0x370 /* 0x[packet number][word index] */
 #define     S_370_ENGINE_SEL(x)			(((unsigned)(x) & 0x3) << 30)
@@ -154,6 +155,7 @@
 #define PKT3_EVENT_WRITE_EOS                   0x48
 #define PKT3_ONE_REG_WRITE                     0x57 /* not on CIK */
 #define PKT3_ACQUIRE_MEM                       0x58 /* new for CIK */
+#define PKT3_LOAD_CONTEXT_REG                  0x60
 #define PKT3_SET_CONFIG_REG                    0x68
 #define PKT3_SET_CONTEXT_REG                   0x69
 #define PKT3_SET_SH_REG                        0x76
