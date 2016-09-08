@@ -1611,7 +1611,6 @@ fill_common_atomic_sources(struct vtn_builder *b, SpvOp opcode,
       src[0] = nir_src_for_ssa(vtn_ssa_value(b, w[8])->def);
       src[1] = nir_src_for_ssa(vtn_ssa_value(b, w[7])->def);
       break;
-      /* Fall through */
 
    case SpvOpAtomicExchange:
    case SpvOpAtomicIAdd:
@@ -1681,6 +1680,18 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       image = *vtn_value(b, w[3], vtn_value_type_image_pointer)->image;
       break;
 
+   case SpvOpAtomicLoad: {
+      image.image =
+         vtn_value(b, w[3], vtn_value_type_access_chain)->access_chain;
+      break;
+   }
+
+   case SpvOpAtomicStore: {
+      image.image =
+         vtn_value(b, w[1], vtn_value_type_access_chain)->access_chain;
+      break;
+   }
+
    case SpvOpImageQuerySize:
       image.image =
          vtn_value(b, w[3], vtn_value_type_access_chain)->access_chain;
@@ -1726,6 +1737,8 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    OP(ImageQuerySize,         size)
    OP(ImageRead,              load)
    OP(ImageWrite,             store)
+   OP(AtomicLoad,             load)
+   OP(AtomicStore,            store)
    OP(AtomicExchange,         atomic_exchange)
    OP(AtomicCompareExchange,  atomic_comp_swap)
    OP(AtomicIIncrement,       atomic_add)
@@ -1764,8 +1777,12 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
    }
 
    switch (opcode) {
+   case SpvOpAtomicLoad:
    case SpvOpImageQuerySize:
    case SpvOpImageRead:
+      break;
+   case SpvOpAtomicStore:
+      intrin->src[2] = nir_src_for_ssa(vtn_ssa_value(b, w[4])->def);
       break;
    case SpvOpImageWrite:
       intrin->src[2] = nir_src_for_ssa(vtn_ssa_value(b, w[3])->def);
@@ -1812,6 +1829,8 @@ static nir_intrinsic_op
 get_ssbo_nir_atomic_op(SpvOp opcode)
 {
    switch (opcode) {
+   case SpvOpAtomicLoad:      return nir_intrinsic_load_ssbo;
+   case SpvOpAtomicStore:     return nir_intrinsic_store_ssbo;
 #define OP(S, N) case SpvOp##S: return nir_intrinsic_ssbo_##N;
    OP(AtomicExchange,         atomic_exchange)
    OP(AtomicCompareExchange,  atomic_comp_swap)
@@ -1836,6 +1855,8 @@ static nir_intrinsic_op
 get_shared_nir_atomic_op(SpvOp opcode)
 {
    switch (opcode) {
+   case SpvOpAtomicLoad:      return nir_intrinsic_load_var;
+   case SpvOpAtomicStore:     return nir_intrinsic_store_var;
 #define OP(S, N) case SpvOp##S: return nir_intrinsic_var_##N;
    OP(AtomicExchange,         atomic_exchange)
    OP(AtomicCompareExchange,  atomic_comp_swap)
@@ -1860,9 +1881,37 @@ static void
 vtn_handle_ssbo_or_shared_atomic(struct vtn_builder *b, SpvOp opcode,
                                  const uint32_t *w, unsigned count)
 {
-   struct vtn_access_chain *chain =
-      vtn_value(b, w[3], vtn_value_type_access_chain)->access_chain;
+   struct vtn_access_chain *chain;
    nir_intrinsic_instr *atomic;
+
+   switch (opcode) {
+   case SpvOpAtomicLoad:
+   case SpvOpAtomicExchange:
+   case SpvOpAtomicCompareExchange:
+   case SpvOpAtomicCompareExchangeWeak:
+   case SpvOpAtomicIIncrement:
+   case SpvOpAtomicIDecrement:
+   case SpvOpAtomicIAdd:
+   case SpvOpAtomicISub:
+   case SpvOpAtomicSMin:
+   case SpvOpAtomicUMin:
+   case SpvOpAtomicSMax:
+   case SpvOpAtomicUMax:
+   case SpvOpAtomicAnd:
+   case SpvOpAtomicOr:
+   case SpvOpAtomicXor:
+      chain =
+         vtn_value(b, w[3], vtn_value_type_access_chain)->access_chain;
+      break;
+
+   case SpvOpAtomicStore:
+      chain =
+         vtn_value(b, w[1], vtn_value_type_access_chain)->access_chain;
+      break;
+
+   default:
+      unreachable("Invalid SPIR-V atomic");
+   }
 
    /*
    SpvScope scope = w[4];
@@ -1870,11 +1919,44 @@ vtn_handle_ssbo_or_shared_atomic(struct vtn_builder *b, SpvOp opcode,
    */
 
    if (chain->var->mode == vtn_variable_mode_workgroup) {
+      struct vtn_type *type = chain->var->type;
       nir_deref *deref = &vtn_access_chain_to_deref(b, chain)->deref;
       nir_intrinsic_op op = get_shared_nir_atomic_op(opcode);
       atomic = nir_intrinsic_instr_create(b->nb.shader, op);
       atomic->variables[0] = nir_deref_as_var(nir_copy_deref(atomic, deref));
-      fill_common_atomic_sources(b, opcode, w, &atomic->src[0]);
+
+      switch (opcode) {
+      case SpvOpAtomicLoad:
+         atomic->num_components = glsl_get_vector_elements(type->type);
+         break;
+
+      case SpvOpAtomicStore:
+         atomic->num_components = glsl_get_vector_elements(type->type);
+         nir_intrinsic_set_write_mask(atomic, (1 << atomic->num_components) - 1);
+         atomic->src[0] = nir_src_for_ssa(vtn_ssa_value(b, w[4])->def);
+         break;
+
+      case SpvOpAtomicExchange:
+      case SpvOpAtomicCompareExchange:
+      case SpvOpAtomicCompareExchangeWeak:
+      case SpvOpAtomicIIncrement:
+      case SpvOpAtomicIDecrement:
+      case SpvOpAtomicIAdd:
+      case SpvOpAtomicISub:
+      case SpvOpAtomicSMin:
+      case SpvOpAtomicUMin:
+      case SpvOpAtomicSMax:
+      case SpvOpAtomicUMax:
+      case SpvOpAtomicAnd:
+      case SpvOpAtomicOr:
+      case SpvOpAtomicXor:
+         fill_common_atomic_sources(b, opcode, w, &atomic->src[0]);
+         break;
+
+      default:
+         unreachable("Invalid SPIR-V atomic");
+
+      }
    } else {
       assert(chain->var->mode == vtn_variable_mode_ssbo);
       struct vtn_type *type;
@@ -1884,18 +1966,58 @@ vtn_handle_ssbo_or_shared_atomic(struct vtn_builder *b, SpvOp opcode,
       nir_intrinsic_op op = get_ssbo_nir_atomic_op(opcode);
 
       atomic = nir_intrinsic_instr_create(b->nb.shader, op);
-      atomic->src[0] = nir_src_for_ssa(index);
-      atomic->src[1] = nir_src_for_ssa(offset);
-      fill_common_atomic_sources(b, opcode, w, &atomic->src[2]);
+
+      switch (opcode) {
+      case SpvOpAtomicLoad:
+         atomic->num_components = glsl_get_vector_elements(type->type);
+         atomic->src[0] = nir_src_for_ssa(index);
+         atomic->src[1] = nir_src_for_ssa(offset);
+         break;
+
+      case SpvOpAtomicStore:
+         atomic->num_components = glsl_get_vector_elements(type->type);
+         nir_intrinsic_set_write_mask(atomic, (1 << atomic->num_components) - 1);
+         atomic->src[0] = nir_src_for_ssa(vtn_ssa_value(b, w[4])->def);
+         atomic->src[1] = nir_src_for_ssa(index);
+         atomic->src[2] = nir_src_for_ssa(offset);
+         break;
+
+      case SpvOpAtomicExchange:
+      case SpvOpAtomicCompareExchange:
+      case SpvOpAtomicCompareExchangeWeak:
+      case SpvOpAtomicIIncrement:
+      case SpvOpAtomicIDecrement:
+      case SpvOpAtomicIAdd:
+      case SpvOpAtomicISub:
+      case SpvOpAtomicSMin:
+      case SpvOpAtomicUMin:
+      case SpvOpAtomicSMax:
+      case SpvOpAtomicUMax:
+      case SpvOpAtomicAnd:
+      case SpvOpAtomicOr:
+      case SpvOpAtomicXor:
+         atomic->src[0] = nir_src_for_ssa(index);
+         atomic->src[1] = nir_src_for_ssa(offset);
+         fill_common_atomic_sources(b, opcode, w, &atomic->src[2]);
+         break;
+
+      default:
+         unreachable("Invalid SPIR-V atomic");
+      }
    }
 
-   nir_ssa_dest_init(&atomic->instr, &atomic->dest, 1, 32, NULL);
+   if (opcode != SpvOpAtomicStore) {
+      struct vtn_type *type = vtn_value(b, w[1], vtn_value_type_type)->type;
 
-   struct vtn_type *type = vtn_value(b, w[1], vtn_value_type_type)->type;
-   struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_ssa);
-   val->ssa = rzalloc(b, struct vtn_ssa_value);
-   val->ssa->def = &atomic->dest.ssa;
-   val->ssa->type = type->type;
+      nir_ssa_dest_init(&atomic->instr, &atomic->dest,
+                        glsl_get_vector_elements(type->type),
+                        glsl_get_bit_size(type->type), NULL);
+
+      struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_ssa);
+      val->ssa = rzalloc(b, struct vtn_ssa_value);
+      val->ssa->def = &atomic->dest.ssa;
+      val->ssa->type = type->type;
+   }
 
    nir_builder_instr_insert(&b->nb, &atomic->instr);
 }
@@ -2677,6 +2799,7 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
       break;
    }
 
+   case SpvOpAtomicLoad:
    case SpvOpAtomicExchange:
    case SpvOpAtomicCompareExchange:
    case SpvOpAtomicCompareExchangeWeak:
@@ -2692,6 +2815,17 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpAtomicOr:
    case SpvOpAtomicXor: {
       struct vtn_value *pointer = vtn_untyped_value(b, w[3]);
+      if (pointer->value_type == vtn_value_type_image_pointer) {
+         vtn_handle_image(b, opcode, w, count);
+      } else {
+         assert(pointer->value_type == vtn_value_type_access_chain);
+         vtn_handle_ssbo_or_shared_atomic(b, opcode, w, count);
+      }
+      break;
+   }
+
+   case SpvOpAtomicStore: {
+      struct vtn_value *pointer = vtn_untyped_value(b, w[1]);
       if (pointer->value_type == vtn_value_type_image_pointer) {
          vtn_handle_image(b, opcode, w, count);
       } else {
