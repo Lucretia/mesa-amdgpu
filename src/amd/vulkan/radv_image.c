@@ -413,7 +413,7 @@ radv_query_opaque_metadata(struct radv_device *device,
 	si_make_texture_descriptor(device, image, true,
 				   (VkImageViewType)image->type, image->vk_format,
 				   &fixedmapping, 0, image->levels - 1, 0,
-				   0, //is_array ? image->array_size - 1 : 0,
+				   image->array_size,
 				   image->extent.width, image->extent.height,
 				   image->extent.depth,
 				   desc, NULL);
@@ -785,6 +785,7 @@ radv_image_view_init(struct radv_image_view *iview,
 					    vk_format_get_blockheight(image->vk_format));
 
 	iview->base_layer = range->baseArrayLayer;
+	iview->layer_count = radv_get_layerCount(image, range);
 	iview->base_mip = range->baseMipLevel;
 
 	si_make_texture_descriptor(device, image, false,
