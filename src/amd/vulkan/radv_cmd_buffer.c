@@ -963,12 +963,10 @@ radv_cmd_buffer_flush_state(struct radv_cmd_buffer *cmd_buffer)
 	if (cmd_buffer->state.dirty & RADV_CMD_DIRTY_PIPELINE)
 		radv_emit_graphics_pipeline(cmd_buffer, pipeline);
 
-	if (cmd_buffer->state.dirty & (RADV_CMD_DIRTY_DYNAMIC_VIEWPORT |
-				       RADV_CMD_DIRTY_PIPELINE))
+	if (cmd_buffer->state.dirty & (RADV_CMD_DIRTY_DYNAMIC_VIEWPORT))
 		radv_emit_viewport(cmd_buffer);
 
-	if (cmd_buffer->state.dirty & (RADV_CMD_DIRTY_DYNAMIC_SCISSOR |
-				       RADV_CMD_DIRTY_PIPELINE))
+	if (cmd_buffer->state.dirty & (RADV_CMD_DIRTY_DYNAMIC_SCISSOR))
 		radv_emit_scissor(cmd_buffer);
 
 	if (cmd_buffer->state.dirty & RADV_CMD_DIRTY_PIPELINE) {
@@ -1573,7 +1571,15 @@ void radv_CmdExecuteCommands(
 
 		primary->device->ws->cs_execute_secondary(primary->cs, secondary->cs);
 	}
+
+	/* if we execute secondary we need to re-emit out pipelines */
+	if (commandBufferCount) {
+		primary->state.emitted_pipeline = NULL;
+		primary->state.dirty |= RADV_CMD_DIRTY_PIPELINE;
+		primary->state.dirty |= RADV_CMD_DIRTY_DYNAMIC_ALL;
+	}
 }
+
 VkResult radv_CreateCommandPool(
 	VkDevice                                    _device,
 	const VkCommandPoolCreateInfo*              pCreateInfo,
@@ -1982,7 +1988,7 @@ static void radv_initialize_htile(struct radv_cmd_buffer *cmd_buffer,
 	                                RADV_CMD_FLAG_FLUSH_AND_INV_DB_META;
 
 	radv_fill_buffer(cmd_buffer, image->bo->bo, image->offset + image->htile.offset,
-			 image->htile.size, 0xf);
+			 image->htile.size, 0xffffffff);
 
 	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_DB_META |
 	                                RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
@@ -2021,6 +2027,21 @@ static void radv_handle_depth_image_transition(struct radv_cmd_buffer *cmd_buffe
 	}
 }
 
+void radv_initialise_cmask(struct radv_cmd_buffer *cmd_buffer,
+			   struct radv_image *image)
+{
+	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
+	                                RADV_CMD_FLAG_FLUSH_AND_INV_CB_META;
+
+	radv_fill_buffer(cmd_buffer, image->bo->bo, image->offset + image->cmask.offset,
+			 image->cmask.size, 0xccccccccu);
+
+	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB_META |
+	                                RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
+	                                RADV_CMD_FLAG_INV_VMEM_L1 |
+	                                RADV_CMD_FLAG_INV_GLOBAL_L2;
+}
+ 
 static void radv_handle_cmask_image_transition(struct radv_cmd_buffer *cmd_buffer,
 					       struct radv_image *image,
 					       VkImageLayout src_layout,
@@ -2028,9 +2049,12 @@ static void radv_handle_cmask_image_transition(struct radv_cmd_buffer *cmd_buffe
 					       VkImageSubresourceRange range,
 					       VkImageAspectFlags pending_clears)
 {
-	if (src_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
-	    dst_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+	if (radv_layout_has_cmask(image, src_layout) &&
+	    !radv_layout_has_cmask(image, dst_layout)) {
 		radv_fast_clear_flush_image_inplace(cmd_buffer, image);
+	} else if (!radv_layout_has_cmask(image, src_layout) &&
+		   radv_layout_has_cmask(image, dst_layout)) {
+		radv_initialise_cmask(cmd_buffer, image);
 	}
 }
 

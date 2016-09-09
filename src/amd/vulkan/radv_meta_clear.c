@@ -46,28 +46,6 @@ enum {
 };
 
 static void
-meta_clear_begin(struct radv_meta_saved_state *saved_state,
-                 struct radv_cmd_buffer *cmd_buffer)
-{
-	radv_meta_save(saved_state, cmd_buffer,
-		       (1 << VK_DYNAMIC_STATE_VIEWPORT) |
-		       (1 << VK_DYNAMIC_STATE_SCISSOR) |
-		       (1 << VK_DYNAMIC_STATE_STENCIL_REFERENCE) |
-		       (1 << VK_DYNAMIC_STATE_STENCIL_WRITE_MASK));
-
-	/* Avoid uploading more viewport states than necessary */
-	cmd_buffer->state.dynamic.viewport.count = 0;
-	cmd_buffer->state.dynamic.scissor.count = 0;
-}
-
-static void
-meta_clear_end(struct radv_meta_saved_state *saved_state,
-               struct radv_cmd_buffer *cmd_buffer)
-{
-	radv_meta_restore(saved_state, cmd_buffer);
-}
-
-static void
 build_color_shaders(struct nir_shader **out_vs,
                     struct nir_shader **out_fs,
                     uint32_t frag_output)
@@ -827,25 +805,34 @@ emit_fast_color_clear(struct radv_cmd_buffer *cmd_buffer,
 		return false;
 
 	if (vk_format_get_blocksizebits(iview->image->vk_format) > 64)
-		return false;
+		goto fail;
 
 	/* all layers are bound */
 	if (iview->base_layer > 0)
-		return false;
+		goto fail;
 	if (iview->image->array_size != iview->layer_count)
-		return false;
+		goto fail;
 
 	if (iview->image->levels > 1)
-		return false;
+		goto fail;
 
 	if (iview->image->surface.level[0].mode < RADEON_SURF_MODE_1D)
-		return false;
+		goto fail;
+
+	if (clear_rect->rect.extent.width != iview->image->extent.width ||
+	    clear_rect->rect.extent.height != iview->image->extent.height)
+		goto fail;
+
+	if (clear_rect->baseArrayLayer != 0)
+		goto fail;
+	if (clear_rect->layerCount != iview->image->array_size)
+		goto fail;
 
 	/* DCC */
 	ret = radv_format_pack_clear_color(iview->image->vk_format,
 					   clear_color, &clear_value);
 	if (ret == false)
-		return false;
+		goto fail;
 
 	/* clear cmask buffer */
 	radv_fill_buffer(cmd_buffer, iview->image->bo->bo,
@@ -855,6 +842,12 @@ emit_fast_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_set_color_clear_regs(cmd_buffer, iview->image, subpass_att, clear_color);
 
 	return true;
+fail:
+	clear_color[0] = 0;
+	clear_color[1] = 0;
+	radv_initialise_cmask(cmd_buffer, iview->image);
+	radv_set_color_clear_regs(cmd_buffer, iview->image, subpass_att, clear_color);
+	return false;
 }
 
 /**
@@ -914,7 +907,7 @@ radv_cmd_buffer_clear_subpass(struct radv_cmd_buffer *cmd_buffer)
 	if (!subpass_needs_clear(cmd_buffer))
 		return;
 
-	meta_clear_begin(&saved_state, cmd_buffer);
+	radv_meta_save_graphics_reset_vport_scissor(&saved_state, cmd_buffer);
 
 	if (cmd_state->framebuffer->layers > 1)
 		radv_finishme("clearing multi-layer framebuffer");
@@ -960,7 +953,7 @@ radv_cmd_buffer_clear_subpass(struct radv_cmd_buffer *cmd_buffer)
 		}
 	}
 
-	meta_clear_end(&saved_state, cmd_buffer);
+	radv_meta_restore(&saved_state, cmd_buffer);
 }
 
 static void
@@ -1122,13 +1115,13 @@ void radv_CmdClearColorImage(
 	RADV_FROM_HANDLE(radv_image, image, image_h);
 	struct radv_meta_saved_state saved_state;
 
-	meta_clear_begin(&saved_state, cmd_buffer);
+	radv_meta_save_graphics_reset_vport_scissor(&saved_state, cmd_buffer);
 
 	radv_cmd_clear_image(cmd_buffer, image, imageLayout,
 			     (const VkClearValue *) pColor,
 			     rangeCount, pRanges);
 
-	meta_clear_end(&saved_state, cmd_buffer);
+	radv_meta_restore(&saved_state, cmd_buffer);
 }
 
 void radv_CmdClearDepthStencilImage(
@@ -1143,13 +1136,13 @@ void radv_CmdClearDepthStencilImage(
 	RADV_FROM_HANDLE(radv_image, image, image_h);
 	struct radv_meta_saved_state saved_state;
 
-	meta_clear_begin(&saved_state, cmd_buffer);
+	radv_meta_save_graphics_reset_vport_scissor(&saved_state, cmd_buffer);
 
 	radv_cmd_clear_image(cmd_buffer, image, imageLayout,
 			     (const VkClearValue *) pDepthStencil,
 			     rangeCount, pRanges);
 
-	meta_clear_end(&saved_state, cmd_buffer);
+	radv_meta_restore(&saved_state, cmd_buffer);
 }
 
 void radv_CmdClearAttachments(
@@ -1164,7 +1157,8 @@ void radv_CmdClearAttachments(
 
 	if (!cmd_buffer->state.subpass)
 		return;
-	meta_clear_begin(&saved_state, cmd_buffer);
+
+	radv_meta_save_graphics_reset_vport_scissor(&saved_state, cmd_buffer);
 
 	/* FINISHME: We can do better than this dumb loop. It thrashes too much
 	 * state.
@@ -1175,5 +1169,5 @@ void radv_CmdClearAttachments(
 		}
 	}
 
-	meta_clear_end(&saved_state, cmd_buffer);
+	radv_meta_restore(&saved_state, cmd_buffer);
 }

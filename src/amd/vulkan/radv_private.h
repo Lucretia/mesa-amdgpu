@@ -467,7 +467,8 @@ struct radv_meta_state {
 	} depth_decomp;
 
 	struct {
-		VkPipeline                                pipeline;
+		VkPipeline                                cmask_eliminate_pipeline;
+		VkPipeline                                fmask_decompress_pipeline;
 		VkRenderPass                              pass;
 	} fast_clear_flush;
 
@@ -1032,7 +1033,8 @@ bool radv_layout_is_htile_compressed(const struct radv_image *image,
                                      VkImageLayout layout);
 bool radv_layout_can_expclear(const struct radv_image *image,
                               VkImageLayout layout);
-
+bool radv_layout_has_cmask(const struct radv_image *image,
+			   VkImageLayout layout);
 static inline uint32_t
 radv_get_layerCount(const struct radv_image *image,
 		    const VkImageSubresourceRange *range)
@@ -1238,7 +1240,8 @@ radv_temp_descriptor_set_create(struct radv_device *device,
 void
 radv_temp_descriptor_set_destroy(struct radv_device *device,
 				 VkDescriptorSet _set);
-
+void radv_initialise_cmask(struct radv_cmd_buffer *cmd_buffer,
+			   struct radv_image *image);
 #define RADV_DEFINE_HANDLE_CASTS(__radv_type, __VkType)		\
 								\
 	static inline struct __radv_type *			\
