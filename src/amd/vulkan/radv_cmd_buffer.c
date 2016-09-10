@@ -491,6 +491,9 @@ radv_emit_graphics_pipeline(struct radv_cmd_buffer *cmd_buffer,
 	radv_emit_vertex_shader(cmd_buffer, pipeline);
 	radv_emit_fragment_shader(cmd_buffer, pipeline);
 
+	radeon_set_context_reg(cmd_buffer->cs, R_028A94_VGT_MULTI_PRIM_IB_RESET_EN,
+			       pipeline->graphics.prim_restart_enable);
+
 	cmd_buffer->state.emitted_pipeline = pipeline;
 }
 
@@ -605,7 +608,7 @@ radv_set_depth_clear_regs(struct radv_cmd_buffer *cmd_buffer,
 			  VkImageAspectFlags aspects)
 {
 	uint64_t va = cmd_buffer->device->ws->buffer_get_va(image->bo->bo);
-	va += image->offset + image->htile.offset + image->htile.size;
+	va += image->offset + image->clear_value_offset;
 	unsigned reg_offset = 0, reg_count = 0;
 
 	if (!image->htile.size || !aspects)
@@ -645,7 +648,7 @@ radv_load_depth_clear_regs(struct radv_cmd_buffer *cmd_buffer,
 			   struct radv_image *image)
 {
 	uint64_t va = cmd_buffer->device->ws->buffer_get_va(image->bo->bo);
-	va += image->offset + image->htile.offset + image->htile.size;
+	va += image->offset + image->clear_value_offset;
 
 	if (!image->htile.size)
 		return;
@@ -672,7 +675,7 @@ radv_set_color_clear_regs(struct radv_cmd_buffer *cmd_buffer,
 			  uint32_t color_values[2])
 {
 	uint64_t va = cmd_buffer->device->ws->buffer_get_va(image->bo->bo);
-	va += image->offset + image->cmask.offset + image->cmask.size;
+	va += image->offset + image->clear_value_offset;
 
 	if (!image->cmask.size && !image->surface.dcc_size)
 		return;
@@ -699,9 +702,9 @@ radv_load_color_clear_regs(struct radv_cmd_buffer *cmd_buffer,
 			   int idx)
 {
 	uint64_t va = cmd_buffer->device->ws->buffer_get_va(image->bo->bo);
-	va += image->offset + image->cmask.offset + image->cmask.size;
+	va += image->offset + image->clear_value_offset;
 
-	if (!image->cmask.size)
+	if (!image->cmask.size && !image->surface.dcc_size)
 		return;
 
 	uint32_t reg = R_028C8C_CB_COLOR0_CLEAR_WORD0 + idx * 0x3c;
@@ -1701,9 +1704,21 @@ void radv_CmdDraw(
 	radeon_emit(cmd_buffer->cs, PKT3(PKT3_DRAW_INDEX_AUTO, 1, 0));
 	radeon_emit(cmd_buffer->cs, vertexCount);
 	radeon_emit(cmd_buffer->cs, V_0287F0_DI_SRC_SEL_AUTO_INDEX |
-		    S_0287F0_USE_OPAQUE(0));//!!info->count_from_stream_output));
+		    S_0287F0_USE_OPAQUE(0));
 
 	assert(cmd_buffer->cs->cdw <= cdw_max);
+}
+
+static void radv_emit_primitive_reset_index(struct radv_cmd_buffer *cmd_buffer)
+{
+	uint32_t primitive_reset_index = cmd_buffer->state.last_primitive_reset_index ? 0xffffffffu : 0xffffu;
+
+	if (cmd_buffer->state.pipeline->graphics.prim_restart_enable &&
+	    primitive_reset_index != cmd_buffer->state.last_primitive_reset_index) {
+		cmd_buffer->state.last_primitive_reset_index = primitive_reset_index;
+		radeon_set_context_reg(cmd_buffer->cs, R_02840C_VGT_MULTI_PRIM_IB_RESET_INDX,
+				       primitive_reset_index);
+	}
 }
 
 void radv_CmdDrawIndexed(
@@ -1720,6 +1735,7 @@ void radv_CmdDrawIndexed(
 	uint64_t index_va;
 
 	radv_cmd_buffer_flush_state(cmd_buffer);
+	radv_emit_primitive_reset_index(cmd_buffer);
 
 	unsigned cdw_max = radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, 14);
 
@@ -1812,6 +1828,7 @@ void radv_CmdDrawIndexedIndirect(
 	uint32_t index_max_size = (cmd_buffer->state.index_buffer->size - cmd_buffer->state.index_offset) / index_size;
 	uint64_t index_va;
 	radv_cmd_buffer_flush_state(cmd_buffer);
+	radv_emit_primitive_reset_index(cmd_buffer);
 
 	index_va = cmd_buffer->device->ws->buffer_get_va(cmd_buffer->state.index_buffer->bo->bo);
 	index_va += cmd_buffer->state.index_buffer->offset + cmd_buffer->state.index_offset;
@@ -2086,6 +2103,9 @@ static void radv_handle_dcc_image_transition(struct radv_cmd_buffer *cmd_buffer,
 		radv_initialize_dcc(cmd_buffer, image, 0x20202020u);
 	} else if (src_layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
 		radv_initialize_dcc(cmd_buffer, image, 0xffffffffu);
+	} else if(src_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+		  dst_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+		radv_fast_clear_flush_image_inplace(cmd_buffer, image);
 	}
 }
 

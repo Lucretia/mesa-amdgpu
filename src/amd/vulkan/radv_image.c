@@ -56,7 +56,7 @@ radv_init_surface(struct radv_device *device,
 	unsigned array_mode = radv_choose_tiling(device, create_info);
 	const struct vk_format_description *desc =
 		vk_format_description(pCreateInfo->format);
-	bool is_depth, is_stencil;
+	bool is_depth, is_stencil, blendable;
 
 	is_depth = vk_format_has_depth(desc);
 	is_stencil = vk_format_has_stencil(desc);
@@ -109,12 +109,12 @@ radv_init_surface(struct radv_device *device,
 	surface->flags |= RADEON_SURF_HAS_TILE_MODE_INDEX;
 
 	if ((pCreateInfo->usage & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-	                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
 	                           VK_IMAGE_USAGE_STORAGE_BIT)) ||
 	    (pCreateInfo->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) ||
             (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR) ||
             device->instance->physicalDevice.rad_info.chip_class < VI ||
-            create_info->scanout || device->allow_fast_clears)
+            create_info->scanout || !device->allow_dcc ||
+            !radv_is_colorbuffer_format_supported(pCreateInfo->format, &blendable))
 		surface->flags |= RADEON_SURF_DISABLE_DCC;
 	if (create_info->scanout)
 		surface->flags |= RADEON_SURF_SCANOUT;
@@ -583,6 +583,7 @@ radv_image_alloc_cmask(struct radv_device *device,
 
 	image->cmask.offset = align64(image->size, image->cmask.alignment);
 	/* + 8 for storing the clear values */
+	image->clear_value_offset = image->cmask.offset + image->cmask.size;
 	image->size = image->cmask.offset + image->cmask.size + 8;
 }
 
@@ -592,6 +593,7 @@ radv_image_alloc_dcc(struct radv_device *device,
 {
 	image->dcc_offset = align64(image->size, image->surface.dcc_alignment);
 	/* + 8 for storing the clear values */
+	image->clear_value_offset = image->dcc_offset + image->surface.dcc_size;
 	image->size = image->dcc_offset + image->surface.dcc_size + 8;
 }
 
@@ -672,6 +674,7 @@ radv_image_alloc_htile(struct radv_device *device,
 	image->htile.offset = align64(image->size, 32768);
 
 	/* + 8 for storing the clear values */
+	image->clear_value_offset = image->htile.offset + image->htile.size;
 	image->size = image->htile.offset + image->htile.size + 8;
 	image->alignment = align64(image->alignment, 32768);
 }

@@ -1244,7 +1244,7 @@ radv_pipeline_init(struct radv_pipeline *pipeline,
 		pipeline->graphics.prim = V_008958_DI_PT_RECTLIST;
 		pipeline->graphics.gs_out = V_028A6C_OUTPRIM_TYPE_TRISTRIP;
 	}
-	pipeline->graphics.prim_restart_enable = pCreateInfo->pInputAssemblyState->primitiveRestartEnable;
+	pipeline->graphics.prim_restart_enable = !!pCreateInfo->pInputAssemblyState->primitiveRestartEnable;
 
 	const VkPipelineVertexInputStateCreateInfo *vi_info =
 		pCreateInfo->pVertexInputState;
@@ -1297,8 +1297,6 @@ radv_graphics_pipeline_create(
 	struct radv_pipeline *pipeline;
 	VkResult result;
 
-	//   if (cache == NULL)
-	//      cache = &device->default_pipeline_cache;
 	pipeline = radv_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
 			       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 	if (pipeline == NULL)
@@ -1357,8 +1355,6 @@ static VkResult radv_compute_pipeline_create(
 	RADV_FROM_HANDLE(radv_shader_module, module, pCreateInfo->stage.module);
 	struct radv_pipeline *pipeline;
 	bool dump = getenv("RADV_DUMP_SHADERS");
-	//   if (cache == NULL)
-	//      cache = &device->default_pipeline_cache;
 
 	pipeline = radv_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
 			       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);

@@ -504,6 +504,7 @@ struct radv_device {
 	struct radeon_winsys_cs *empty_cs;
 
 	bool allow_fast_clears;
+	bool allow_dcc;
 };
 
 void radv_device_get_cache_uuid(void *uuid);
@@ -691,6 +692,7 @@ struct radv_cmd_state {
 	struct radv_buffer *                         index_buffer;
 	uint32_t                                     index_type;
 	uint32_t                                     index_offset;
+	uint32_t                                     last_primitive_reset_index;
 	enum radv_cmd_flush_bits                     flush_bits;
 	unsigned                                     active_occlusion_queries;
 	float					     offset_scale;
@@ -966,6 +968,8 @@ uint32_t radv_translate_tex_numformat(VkFormat format,
 bool radv_format_pack_clear_color(VkFormat format,
 				  uint32_t clear_vals[2],
 				  VkClearColorValue *value);
+bool radv_is_colorbuffer_format_supported(VkFormat format, bool *blendable);
+
 struct radv_fmask_info {
 	uint64_t offset;
 	uint64_t size;
@@ -1022,6 +1026,7 @@ struct radv_image {
 
 	struct radv_fmask_info fmask;
 	struct radv_cmask_info cmask;
+	uint32_t clear_value_offset;
 
 	/* Depth buffer compression and fast clear. */
 	struct r600_htile_info htile;
