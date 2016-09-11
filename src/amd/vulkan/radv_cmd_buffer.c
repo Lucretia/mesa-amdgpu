@@ -413,16 +413,20 @@ radv_emit_fragment_shader(struct radv_cmd_buffer *cmd_buffer,
 	radeon_emit(cmd_buffer->cs, ps->rsrc1);
 	radeon_emit(cmd_buffer->cs, ps->rsrc2);
 
-	if (ps->info.fs.early_fragment_test)
+	if (ps->info.fs.early_fragment_test || !ps->info.fs.writes_memory)
 		z_order = V_02880C_EARLY_Z_THEN_LATE_Z;
 	else
 		z_order = V_02880C_LATE_Z;
+
 
 	radeon_set_context_reg(cmd_buffer->cs, R_02880C_DB_SHADER_CONTROL,
 			       S_02880C_Z_EXPORT_ENABLE(ps->info.fs.writes_z) |
 			       S_02880C_STENCIL_TEST_VAL_EXPORT_ENABLE(ps->info.fs.writes_stencil) |
 			       S_02880C_KILL_ENABLE(!!ps->info.fs.can_discard) |
-			       S_02880C_Z_ORDER(z_order));
+			       S_02880C_Z_ORDER(z_order) |
+			       S_02880C_DEPTH_BEFORE_SHADER(ps->info.fs.early_fragment_test) |
+			       S_02880C_EXEC_ON_HIER_FAIL(ps->info.fs.writes_memory) |
+			       S_02880C_EXEC_ON_NOOP(ps->info.fs.writes_memory));
 
 	radeon_set_context_reg(cmd_buffer->cs, R_0286CC_SPI_PS_INPUT_ENA,
 			       ps->config.spi_ps_input_ena);
@@ -1023,21 +1027,23 @@ static void radv_handle_subpass_image_transition(struct radv_cmd_buffer *cmd_buf
 
 void
 radv_cmd_buffer_set_subpass(struct radv_cmd_buffer *cmd_buffer,
-                            const struct radv_subpass *subpass)
+                            const struct radv_subpass *subpass, bool transitions)
 {
-	for (unsigned i = 0; i < subpass->color_count; ++i) {
-		radv_handle_subpass_image_transition(cmd_buffer,
-						     subpass->color_attachments[i]);
-	}
+	if (transitions) {
+		for (unsigned i = 0; i < subpass->color_count; ++i) {
+			radv_handle_subpass_image_transition(cmd_buffer,
+							subpass->color_attachments[i]);
+		}
 
-	for (unsigned i = 0; i < subpass->input_count; ++i) {
-		radv_handle_subpass_image_transition(cmd_buffer,
-						     subpass->input_attachments[i]);
-	}
+		for (unsigned i = 0; i < subpass->input_count; ++i) {
+			radv_handle_subpass_image_transition(cmd_buffer,
+							subpass->input_attachments[i]);
+		}
 
-	if (subpass->depth_stencil_attachment.attachment != VK_ATTACHMENT_UNUSED) {
-		radv_handle_subpass_image_transition(cmd_buffer,
-						     subpass->depth_stencil_attachment);
+		if (subpass->depth_stencil_attachment.attachment != VK_ATTACHMENT_UNUSED) {
+			radv_handle_subpass_image_transition(cmd_buffer,
+							subpass->depth_stencil_attachment);
+		}
 	}
 
 	cmd_buffer->state.subpass = subpass;
@@ -1210,7 +1216,7 @@ VkResult radv_BeginCommandBuffer(
 			&cmd_buffer->state.pass->subpasses[pBeginInfo->pInheritanceInfo->subpass];
 
 		radv_cmd_state_setup_attachments(cmd_buffer, cmd_buffer->state.pass, NULL);
-		radv_cmd_buffer_set_subpass(cmd_buffer, subpass);
+		radv_cmd_buffer_set_subpass(cmd_buffer, subpass, false);
 	}
 
 	return VK_SUCCESS;
@@ -1660,7 +1666,7 @@ void radv_CmdBeginRenderPass(
 
 	si_emit_cache_flush(cmd_buffer);
 
-	radv_cmd_buffer_set_subpass(cmd_buffer, pass->subpasses);
+	radv_cmd_buffer_set_subpass(cmd_buffer, pass->subpasses, true);
 	assert(cmd_buffer->cs->cdw <= cdw_max);
 
 	radv_cmd_buffer_clear_subpass(cmd_buffer);
@@ -2021,7 +2027,10 @@ static void radv_handle_depth_image_transition(struct radv_cmd_buffer *cmd_buffe
 					       VkImageAspectFlags pending_clears)
 {
 	if (dst_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
-	    (pending_clears & vk_format_aspects(image->vk_format))) {
+	    (pending_clears & vk_format_aspects(image->vk_format)) == vk_format_aspects(image->vk_format) &&
+	    cmd_buffer->state.render_area.offset.x == 0 && cmd_buffer->state.render_area.offset.y == 0 &&
+	    cmd_buffer->state.render_area.extent.width == image->extent.width &&
+	    cmd_buffer->state.render_area.extent.height == image->extent.height) {
 		/* The clear will initialize htile. */
 		return;
 	} else if (src_layout == VK_IMAGE_LAYOUT_UNDEFINED &&

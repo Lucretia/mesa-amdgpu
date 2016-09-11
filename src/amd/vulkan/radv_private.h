@@ -462,7 +462,8 @@ struct radv_meta_state {
 	} resolve;
 
 	struct {
-		VkPipeline                                pipeline;
+		VkPipeline                                decompress_pipeline;
+		VkPipeline                                resummarize_pipeline;
 		VkRenderPass                              pass;
 	} depth_decomp;
 
@@ -759,7 +760,8 @@ radv_cmd_buffer_upload_alloc(struct radv_cmd_buffer *cmd_buffer,
 			     void **ptr);
 void
 radv_cmd_buffer_set_subpass(struct radv_cmd_buffer *cmd_buffer,
-                            const struct radv_subpass *subpass);
+			    const struct radv_subpass *subpass,
+			    bool transitions);
 bool
 radv_cmd_buffer_upload_data(struct radv_cmd_buffer *cmd_buffer,
 			    unsigned size, unsigned alignmnet,
@@ -929,6 +931,7 @@ struct radv_graphics_pipeline_create_info {
 	bool db_stencil_disable_expclear;
 	bool db_flush_depth_inplace;
 	bool db_flush_stencil_inplace;
+	bool db_resummarize;
 	uint32_t custom_blend_mode;
 };
 
