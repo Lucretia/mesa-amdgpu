@@ -2054,13 +2054,13 @@ static void radv_handle_depth_image_transition(struct radv_cmd_buffer *cmd_buffe
 }
 
 void radv_initialise_cmask(struct radv_cmd_buffer *cmd_buffer,
-			   struct radv_image *image)
+			   struct radv_image *image, uint32_t value)
 {
 	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
 	                                RADV_CMD_FLAG_FLUSH_AND_INV_CB_META;
 
 	radv_fill_buffer(cmd_buffer, image->bo->bo, image->offset + image->cmask.offset,
-			 image->cmask.size, 0xccccccccu);
+			 image->cmask.size, value);
 
 	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB_META |
 	                                RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
@@ -2075,12 +2075,11 @@ static void radv_handle_cmask_image_transition(struct radv_cmd_buffer *cmd_buffe
 					       VkImageSubresourceRange range,
 					       VkImageAspectFlags pending_clears)
 {
-	if (radv_layout_has_cmask(image, src_layout) &&
-	    !radv_layout_has_cmask(image, dst_layout)) {
+	if (src_layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+		radv_initialise_cmask(cmd_buffer, image, 0xffffffffu);
+	} else if (radv_layout_has_cmask(image, src_layout) &&
+		   !radv_layout_has_cmask(image, dst_layout)) {
 		radv_fast_clear_flush_image_inplace(cmd_buffer, image);
-	} else if (!radv_layout_has_cmask(image, src_layout) &&
-		   radv_layout_has_cmask(image, dst_layout)) {
-		radv_initialise_cmask(cmd_buffer, image);
 	}
 }
 
@@ -2110,8 +2109,6 @@ static void radv_handle_dcc_image_transition(struct radv_cmd_buffer *cmd_buffer,
 {
 	if (src_layout == VK_IMAGE_LAYOUT_UNDEFINED) {
 		radv_initialize_dcc(cmd_buffer, image, 0x20202020u);
-	} else if (src_layout == VK_IMAGE_LAYOUT_PREINITIALIZED) {
-		radv_initialize_dcc(cmd_buffer, image, 0xffffffffu);
 	} else if(src_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
 		  dst_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
 		radv_fast_clear_flush_image_inplace(cmd_buffer, image);

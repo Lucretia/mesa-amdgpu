@@ -1,13 +1,21 @@
 
+<<<<<<< HEAD
 fill out NIR->LLVM
 Fast Clears
 MSAA
 HiZ
+=======
+Fast Clears
+MSAA non-hw resolve
+>>>>>>> airlied/semi-interesting
 DCC
 Geometry shaders
 Tessellation Shaders
 Compute & DMA queues
 pipeline statistics queries
+<<<<<<< HEAD
 secondary command buffers
 compute shared memory
+=======
+>>>>>>> airlied/semi-interesting
 shader scratch/spill space

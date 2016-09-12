@@ -807,6 +807,10 @@ emit_fast_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	if (vk_format_get_blocksizebits(iview->image->vk_format) > 64)
 		goto fail;
 
+	/* don't fast clear 3D */
+	if (iview->image->type == VK_IMAGE_TYPE_3D)
+		goto fail;
+
 	/* all layers are bound */
 	if (iview->base_layer > 0)
 		goto fail;
@@ -819,7 +823,11 @@ emit_fast_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	if (iview->image->surface.level[0].mode < RADEON_SURF_MODE_1D)
 		goto fail;
 
-	if (clear_rect->rect.extent.width != iview->image->extent.width ||
+	if (memcmp(&iview->extent, &iview->image->extent, sizeof(iview->extent)))
+		goto fail;
+
+	if (clear_rect->rect.offset.x || clear_rect->rect.offset.y ||
+	    clear_rect->rect.extent.width != iview->image->extent.width ||
 	    clear_rect->rect.extent.height != iview->image->extent.height)
 		goto fail;
 
@@ -855,10 +863,6 @@ emit_fast_color_clear(struct radv_cmd_buffer *cmd_buffer,
 
 	return true;
 fail:
-	clear_color[0] = 0;
-	clear_color[1] = 0;
-	radv_initialise_cmask(cmd_buffer, iview->image);
-	radv_set_color_clear_regs(cmd_buffer, iview->image, subpass_att, clear_color);
 	return false;
 }
 
