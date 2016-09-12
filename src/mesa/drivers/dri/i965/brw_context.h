@@ -747,7 +747,7 @@ struct brw_context
    {
       uint32_t (*update_renderbuffer_surface)(struct brw_context *brw,
                                               struct gl_renderbuffer *rb,
-                                              bool layered, unsigned unit,
+                                              uint32_t flags, unsigned unit,
                                               uint32_t surf_index);
       void (*emit_null_surface_state)(struct brw_context *brw,
                                       unsigned width,
@@ -1332,6 +1332,16 @@ struct brw_context
    } shader_time;
 
    struct brw_fast_clear_state *fast_clear_state;
+
+   /* Array of flags telling if auxiliary buffer is disabled for corresponding
+    * renderbuffer. If draw_aux_buffer_disabled[i] is set then use of
+    * auxiliary buffer for gl_framebuffer::_ColorDrawBuffers[i] is
+    * disabled.
+    * This is needed in case the same underlying buffer is also configured
+    * to be sampled but with a format that the sampling engine can't treat
+    * compressed or fast cleared.
+    */
+   bool draw_aux_buffer_disabled[MAX_DRAW_BUFFERS];
 
    __DRIcontext *driContext;
    struct intel_screen *intelScreen;

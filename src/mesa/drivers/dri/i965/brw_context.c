@@ -168,6 +168,24 @@ intel_update_framebuffer(struct gl_context *ctx,
                                  fb->DefaultGeometry.NumSamples);
 }
 
+static bool
+intel_disable_rb_aux_buffer(struct brw_context *brw, const drm_intel_bo *bo)
+{
+   const struct gl_framebuffer *fb = brw->ctx.DrawBuffer;
+   bool found = false;
+
+   for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
+      const struct intel_renderbuffer *irb =
+         intel_renderbuffer(fb->_ColorDrawBuffers[i]);
+
+      if (irb && irb->mt->bo == bo) {
+         found = brw->draw_aux_buffer_disabled[i] = true;
+      }
+   }
+
+   return found;
+}
+
 /* On Gen9 color buffers may be compressed by the hardware (lossless
  * compression). There are, however, format restrictions and care needs to be
  * taken that the sampler engine is capable for re-interpreting a buffer with
@@ -197,6 +215,10 @@ intel_texture_view_requires_resolve(struct brw_context *brw,
               _mesa_get_format_name(intel_tex->_Format),
               _mesa_get_format_name(intel_tex->mt->format));
 
+   if (intel_disable_rb_aux_buffer(brw, intel_tex->mt->bo))
+      perf_debug("Sampling renderbuffer with non-compressible format - "
+                 "turning off compression");
+
    return true;
 }
 
@@ -219,6 +241,9 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
    depth_irb = intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
    if (depth_irb)
       intel_renderbuffer_resolve_hiz(brw, depth_irb);
+
+   memset(brw->draw_aux_buffer_disabled, 0,
+          sizeof(brw->draw_aux_buffer_disabled));
 
    /* Resolve depth buffer and render cache of each enabled texture. */
    int maxEnabledUnit = ctx->Texture._MaxEnabledTexImageUnit;
@@ -258,17 +283,25 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
                /* Access to images is implemented using indirect messages
                 * against data port. Normal render target write understands
                 * lossless compression but unfortunately the typed/untyped
-                * read/write interface doesn't. Therefore the compressed
-                * surfaces need to be resolved prior to accessing them.
+                * read/write interface doesn't. Therefore even lossless
+                * compressed surfaces need to be resolved prior to accessing
+                * them. Hence skip setting INTEL_MIPTREE_IGNORE_CCS_E.
                 */
                intel_miptree_resolve_color(brw, tex_obj->mt, 0);
+
+               if (intel_miptree_is_lossless_compressed(brw, tex_obj->mt) &&
+                   intel_disable_rb_aux_buffer(brw, tex_obj->mt->bo)) {
+                  perf_debug("Using renderbuffer as shader image - turning "
+                             "off lossless compression");
+               }
+
                brw_render_cache_set_check_flush(brw, tex_obj->mt->bo);
             }
          }
       }
    }
 
-   /* Resolve color buffers for non-coherent framebufer fetch. */
+   /* Resolve color buffers for non-coherent framebuffer fetch. */
    if (!ctx->Extensions.MESA_shader_framebuffer_fetch &&
        ctx->FragmentProgram._Current &&
        ctx->FragmentProgram._Current->Base.OutputsRead) {

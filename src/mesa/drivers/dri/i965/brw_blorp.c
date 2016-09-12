@@ -287,8 +287,6 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
    intel_miptree_slice_resolve_depth(brw, src_mt, src_level, src_layer);
    intel_miptree_slice_resolve_depth(brw, dst_mt, dst_level, dst_layer);
 
-   intel_miptree_prepare_mcs(brw, dst_mt);
-
    DBG("%s from %dx %s mt %p %d %d (%f,%f) (%f,%f)"
        "to %dx %s mt %p %d %d (%f,%f) (%f,%f) (flip %d,%d)\n",
        __func__,
@@ -655,7 +653,7 @@ set_write_disables(const struct intel_renderbuffer *irb,
 static bool
 do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
                       struct gl_renderbuffer *rb, unsigned buf,
-                      bool partial_clear, bool encode_srgb, unsigned layer)
+                      bool partial_clear, bool encode_srgb)
 {
    struct gl_context *ctx = &brw->ctx;
    struct intel_renderbuffer *irb = intel_renderbuffer(rb);
@@ -689,6 +687,9 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
        !brw_is_color_fast_clear_compatible(brw, irb->mt, &ctx->Color.ClearColor))
       can_fast_clear = false;
 
+   const bool is_lossless_compressed = intel_miptree_is_lossless_compressed(
+                                          brw, irb->mt);
+
    if (can_fast_clear) {
       /* Record the clear color in the miptree so that it will be
        * programmed in SURFACE_STATE by later rendering and resolve
@@ -708,7 +709,8 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
        * it now.
        */
       if (!irb->mt->mcs_mt) {
-         if (!intel_miptree_alloc_non_msrt_mcs(brw, irb->mt)) {
+         assert(!is_lossless_compressed);
+         if (!intel_miptree_alloc_non_msrt_mcs(brw, irb->mt, false)) {
             /* MCS allocation failed--probably this will only happen in
              * out-of-memory conditions.  But in any case, try to recover
              * by falling back to a non-blorp clear technique.
@@ -718,7 +720,6 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
       }
    }
 
-   intel_miptree_check_level_layer(irb->mt, irb->mt_level, layer);
    intel_miptree_used_for_rendering(irb->mt);
 
    /* We can't setup the blorp_surf until we've allocated the MCS above */
@@ -726,16 +727,17 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
    struct blorp_surf surf;
    unsigned level = irb->mt_level;
    blorp_surf_for_miptree(brw, &surf, irb->mt, true, &level, isl_tmp);
+   const unsigned num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
 
    if (can_fast_clear) {
-      DBG("%s (fast) to mt %p level %d layer %d\n", __FUNCTION__,
-          irb->mt, irb->mt_level, irb->mt_layer);
+      DBG("%s (fast) to mt %p level %d layers %d+%d\n", __FUNCTION__,
+          irb->mt, irb->mt_level, irb->mt_layer, num_layers);
 
       struct blorp_batch batch;
       blorp_batch_init(&brw->blorp, &batch, brw);
-      blorp_fast_clear(&batch, &surf, level, layer,
+      blorp_fast_clear(&batch, &surf,
                        (enum isl_format)brw->render_target_format[format],
-                       x0, y0, x1, y1);
+                       level, irb->mt_layer, num_layers, x0, y0, x1, y1);
       blorp_batch_finish(&batch);
 
       /* Now that the fast clear has occurred, put the buffer in
@@ -744,25 +746,25 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
        */
       irb->mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_CLEAR;
    } else {
-      DBG("%s (slow) to mt %p level %d layer %d\n", __FUNCTION__,
-          irb->mt, irb->mt_level, irb->mt_layer);
+      DBG("%s (slow) to mt %p level %d layer %d+%d\n", __FUNCTION__,
+          irb->mt, irb->mt_level, irb->mt_layer, num_layers);
 
       union isl_color_value clear_color;
       memcpy(clear_color.f32, ctx->Color.ClearColor.f, sizeof(float) * 4);
 
       struct blorp_batch batch;
       blorp_batch_init(&brw->blorp, &batch, brw);
-      blorp_clear(&batch, &surf, level, layer, x0, y0, x1, y1,
+      blorp_clear(&batch, &surf, level, irb->mt_layer, num_layers,
+                  x0, y0, x1, y1,
                   (enum isl_format)brw->render_target_format[format],
                   clear_color, color_write_disable);
       blorp_batch_finish(&batch);
 
-      if (intel_miptree_is_lossless_compressed(brw, irb->mt)) {
+      if (is_lossless_compressed) {
          /* Compressed buffers can be cleared also using normal rep-clear. In
-          * such case they bahave such as if they were drawn using normal 3D
+          * such case they behave such as if they were drawn using normal 3D
           * render pipeline, and we simply mark the mcs as dirty.
           */
-         assert(partial_clear);
          irb->mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_UNRESOLVED;
       }
    }
@@ -789,24 +791,14 @@ brw_blorp_clear_color(struct brw_context *brw, struct gl_framebuffer *fb,
       if (rb == NULL)
          continue;
 
-      if (fb->MaxNumLayers > 0) {
-         unsigned layer_multiplier =
-            (irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
-             irb->mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) ?
-            irb->mt->num_samples : 1;
-         unsigned num_layers = irb->layer_count;
-         for (unsigned layer = 0; layer < num_layers; layer++) {
-            if (!do_single_blorp_clear(
-                    brw, fb, rb, buf, partial_clear, encode_srgb,
-                    irb->mt_layer + layer * layer_multiplier)) {
-               return false;
-            }
-         }
-      } else {
-         unsigned layer = irb->mt_layer;
-         if (!do_single_blorp_clear(brw, fb, rb, buf, partial_clear,
-                                    encode_srgb, layer))
-            return false;
+      const unsigned num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
+      for (unsigned layer = 0; layer < num_layers; layer++) {
+         intel_miptree_check_level_layer(irb->mt, irb->mt_level, layer);
+      }
+
+      if (!do_single_blorp_clear(brw, fb, rb, buf, partial_clear,
+                                 encode_srgb)) {
+         return false;
       }
 
       irb->need_downsample = true;
