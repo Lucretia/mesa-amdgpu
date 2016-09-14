@@ -1618,6 +1618,7 @@ static LLVMValueRef build_tex_intrinsic(struct nir_to_llvm_context *ctx,
 	switch (instr->op) {
 	case nir_texop_txf:
 	case nir_texop_txf_ms:
+	case nir_texop_samples_identical:
 		name = instr->sampler_dim == GLSL_SAMPLER_DIM_MS ? "llvm.SI.image.load" :
 		       instr->sampler_dim == GLSL_SAMPLER_DIM_BUF ? "llvm.SI.vs.load.input" :
 			"llvm.SI.image.load.mip";
@@ -2986,6 +2987,20 @@ static void visit_tex(struct nir_to_llvm_context *ctx, nir_tex_instr *instr)
 
 	/* pack derivatives */
 	if (ddx || ddy) {
+		switch (instr->sampler_dim) {
+		case GLSL_SAMPLER_DIM_3D:
+		case GLSL_SAMPLER_DIM_CUBE:
+			num_deriv_comp = 3;
+			break;
+		case GLSL_SAMPLER_DIM_2D:
+		default:
+			num_deriv_comp = 2;
+			break;
+		case GLSL_SAMPLER_DIM_1D:
+			num_deriv_comp = 1;
+			break;
+		}
+
 		for (unsigned i = 0; i < num_deriv_comp; i++) {
 			derivs[i * 2] = to_float(ctx, llvm_extract_elem(ctx, ddx, i));
 			derivs[i * 2 + 1] = to_float(ctx, llvm_extract_elem(ctx, ddy, i));
@@ -3037,6 +3052,24 @@ static void visit_tex(struct nir_to_llvm_context *ctx, nir_tex_instr *instr)
 	for (chan = 0; chan < count; chan++) {
 		address[chan] = LLVMBuildBitCast(ctx->builder,
 						 address[chan], ctx->i32, "");
+	}
+
+	if (instr->op == nir_texop_samples_identical) {
+		LLVMValueRef txf_address[4];
+		struct ac_tex_info txf_info = { 0 };
+		unsigned txf_count = count;
+		memcpy(txf_address, address, sizeof(txf_address));
+
+		if (!instr->is_array)
+			txf_address[2] = ctx->i32zero;
+		txf_address[3] = ctx->i32zero;
+
+		set_tex_fetch_args(ctx, &txf_info, instr, nir_texop_txf,
+				   res_ptr, samp_ptr,
+				   txf_address, txf_count, 0xf);
+
+		result = build_tex_intrinsic(ctx, instr, &txf_info);
+		goto write_result;
 	}
 
 	/* TODO sample FMASK magic */
