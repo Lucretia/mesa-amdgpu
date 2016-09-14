@@ -91,18 +91,14 @@ print_dword_val(struct gen_field_iterator *iter, uint64_t offset,
                 int *dword_num)
 {
    struct gen_field *f;
-   union {
-      uint32_t dw;
-      float f;
-   } v;
 
    f = iter->group->fields[iter->i - 1];
-   v.dw = iter->p[f->start / 32];
+   const int dword = f->start / 32;
 
-   if (*dword_num != (f->start / 32)) {
+   if (*dword_num != dword) {
       printf("0x%08lx:  0x%08x : Dword %d\n",
-             offset + 4 * (f->start / 32), v.dw, f->start / 32);
-      *dword_num = (f->start / 32);
+             offset + 4 * dword,  iter->p[dword], dword);
+      *dword_num = dword;
    }
 }
 
@@ -307,7 +303,7 @@ handle_media_interface_descriptor_load(struct gen_spec *spec, uint32_t *p)
       }
 
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
 
       dump_samplers(spec, descriptors[3] & ~0x1f);
       dump_binding_table(spec, descriptors[4] & ~0x1f);
@@ -405,7 +401,7 @@ handle_3dstate_vs(struct gen_spec *spec, uint32_t *p)
              instruction_base, start);
 
       insns = (struct brw_instruction *) (gtt + instruction_base + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 
@@ -429,7 +425,7 @@ handle_3dstate_hs(struct gen_spec *spec, uint32_t *p)
              instruction_base, start);
 
       insns = (struct brw_instruction *) (gtt + instruction_base + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 
@@ -523,21 +519,21 @@ handle_3dstate_ps(struct gen_spec *spec, uint32_t *p)
    printf("  Kernel[0] %s\n", k0);
    if (k0 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 
    start = instruction_base + (p[k1_offset] & mask);
    printf("  Kernel[1] %s\n", k1);
    if (k1 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 
    start = instruction_base + (p[k2_offset] & mask);
    printf("  Kernel[2] %s\n", k2);
    if (k2 != unused) {
       insns = (struct brw_instruction *) (gtt + start);
-      gen_disasm_disassemble(disasm, insns, 0, 8192, stdout);
+      gen_disasm_disassemble(disasm, insns, 0, stdout);
    }
 }
 

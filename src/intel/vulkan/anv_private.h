@@ -41,6 +41,7 @@
 #endif
 
 #include "common/gen_device_info.h"
+#include "blorp/blorp.h"
 #include "brw_compiler.h"
 #include "util/macros.h"
 #include "util/list.h"
@@ -709,6 +710,9 @@ struct anv_device {
 
     struct anv_meta_state                       meta_state;
 
+    struct anv_pipeline_cache                   blorp_shader_cache;
+    struct blorp_context                        blorp;
+
     struct anv_state                            border_colors;
 
     struct anv_queue                            queue;
@@ -722,6 +726,8 @@ struct anv_device {
 
 void anv_device_get_cache_uuid(void *uuid);
 
+void anv_device_init_blorp(struct anv_device *device);
+void anv_device_finish_blorp(struct anv_device *device);
 
 void* anv_gem_mmap(struct anv_device *device,
                    uint32_t gem_handle, uint64_t offset, uint64_t size, uint32_t flags);
@@ -807,12 +813,9 @@ struct anv_address {
    uint32_t offset;
 };
 
-#define __gen_address_type struct anv_address
-#define __gen_user_data struct anv_batch
-
 static inline uint64_t
-__gen_combine_address(struct anv_batch *batch, void *location,
-                      const struct anv_address address, uint32_t delta)
+_anv_combine_address(struct anv_batch *batch, void *location,
+                     const struct anv_address address, uint32_t delta)
 {
    if (address.bo == NULL) {
       return address.offset + delta;
@@ -822,6 +825,10 @@ __gen_combine_address(struct anv_batch *batch, void *location,
       return anv_batch_emit_reloc(batch, location, address.bo, address.offset + delta);
    }
 }
+
+#define __gen_address_type struct anv_address
+#define __gen_user_data struct anv_batch
+#define __gen_combine_address _anv_combine_address
 
 /* Wrapper macros needed to work around preprocessor argument issues.  In
  * particular, arguments don't get pre-evaluated if they are concatenated.
@@ -1521,9 +1528,6 @@ struct anv_pipeline {
    struct anv_shader_bin *                      shaders[MESA_SHADER_STAGES];
 
    struct {
-      uint32_t                                  start[MESA_SHADER_GEOMETRY + 1];
-      uint32_t                                  size[MESA_SHADER_GEOMETRY + 1];
-      uint32_t                                  entries[MESA_SHADER_GEOMETRY + 1];
       const struct gen_l3_config *              l3_config;
       uint32_t                                  total_size;
    } urb;
@@ -1638,9 +1642,6 @@ anv_get_isl_format(const struct gen_device_info *devinfo, VkFormat vk_format,
 }
 
 void
-anv_compute_urb_partition(struct anv_pipeline *pipeline);
-
-void
 anv_pipeline_setup_l3_config(struct anv_pipeline *pipeline, bool needs_slm);
 
 /**
@@ -1752,8 +1753,8 @@ VkResult anv_image_create(VkDevice _device,
                           const VkAllocationCallbacks* alloc,
                           VkImage *pImage);
 
-struct anv_surface *
-anv_image_get_surface_for_aspect_mask(struct anv_image *image,
+const struct anv_surface *
+anv_image_get_surface_for_aspect_mask(const struct anv_image *image,
                                       VkImageAspectFlags aspect_mask);
 
 void anv_image_view_init(struct anv_image_view *view,

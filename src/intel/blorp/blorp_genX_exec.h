@@ -60,7 +60,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
 static void
 blorp_alloc_binding_table(struct blorp_batch *batch, unsigned num_entries,
                           unsigned state_size, unsigned state_alignment,
-                          uint32_t *bt_offset, uint32_t **bt_map,
+                          uint32_t *bt_offset, uint32_t *surface_offsets,
                           void **surface_maps);
 static void
 blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
@@ -75,12 +75,9 @@ blorp_emit_3dstate_multisample(struct blorp_batch *batch, unsigned samples);
 
 #include "genxml/gen_macros.h"
 
-#define __gen_address_type struct blorp_address
-#define __gen_user_data struct blorp_batch
-
 static uint64_t
-__gen_combine_address(struct blorp_batch *batch, void *location,
-                      struct blorp_address address, uint32_t delta)
+_blorp_combine_address(struct blorp_batch *batch, void *location,
+                       struct blorp_address address, uint32_t delta)
 {
    if (address.buffer == NULL) {
       return address.offset + delta;
@@ -88,6 +85,10 @@ __gen_combine_address(struct blorp_batch *batch, void *location,
       return blorp_emit_reloc(batch, location, address, delta);
    }
 }
+
+#define __gen_address_type struct blorp_address
+#define __gen_user_data struct blorp_batch
+#define __gen_combine_address _blorp_combine_address
 
 #include "genxml/genX_pack.h"
 
@@ -946,7 +947,7 @@ static void
 blorp_emit_surface_states(struct blorp_batch *batch,
                           const struct blorp_params *params)
 {
-   uint32_t bind_offset, *bind_map;
+   uint32_t bind_offset, surface_offsets[2];
    void *surface_maps[2];
 
    const unsigned ss_size = GENX(RENDER_SURFACE_STATE_length) * 4;
@@ -954,15 +955,15 @@ blorp_emit_surface_states(struct blorp_batch *batch,
 
    unsigned num_surfaces = 1 + (params->src.addr.buffer != NULL);
    blorp_alloc_binding_table(batch, num_surfaces, ss_size, ss_align,
-                             &bind_offset, &bind_map, surface_maps);
+                             &bind_offset, surface_offsets, surface_maps);
 
    blorp_emit_surface_state(batch, &params->dst,
                             surface_maps[BLORP_RENDERBUFFER_BT_INDEX],
-                            bind_map[BLORP_RENDERBUFFER_BT_INDEX], true);
+                            surface_offsets[BLORP_RENDERBUFFER_BT_INDEX], true);
    if (params->src.addr.buffer) {
       blorp_emit_surface_state(batch, &params->src,
                                surface_maps[BLORP_TEXTURE_BT_INDEX],
-                               bind_map[BLORP_TEXTURE_BT_INDEX], false);
+                               surface_offsets[BLORP_TEXTURE_BT_INDEX], false);
    }
 
 #if GEN_GEN >= 7
