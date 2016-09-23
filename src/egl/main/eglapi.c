@@ -295,9 +295,9 @@ eglGetDisplay(EGLNativeDisplayType nativeDisplay)
    return _eglGetDisplayHandle(dpy);
 }
 
-static EGLDisplay EGLAPIENTRY
-eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
-                         const EGLint *attrib_list)
+static EGLDisplay
+_eglGetPlatformDisplayCommon(EGLenum platform, void *native_display,
+			     const EGLint *attrib_list)
 {
    _EGLDisplay *dpy;
 
@@ -326,17 +326,25 @@ eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
    return _eglGetDisplayHandle(dpy);
 }
 
+static EGLDisplay EGLAPIENTRY
+eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
+                         const EGLint *attrib_list)
+{
+   return _eglGetPlatformDisplayCommon(platform, native_display, attrib_list);
+}
+
 EGLDisplay EGLAPIENTRY
 eglGetPlatformDisplay(EGLenum platform, void *native_display,
                       const EGLAttrib *attrib_list)
 {
    EGLDisplay display;
-   EGLint *int_attribs = _eglConvertAttribsToInt(attrib_list);
+   EGLint *int_attribs;
 
+   int_attribs = _eglConvertAttribsToInt(attrib_list);
    if (attrib_list && !int_attribs)
       RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, NULL);
 
-   display = eglGetPlatformDisplayEXT(platform, native_display, int_attribs);
+   display = _eglGetPlatformDisplayCommon(platform, native_display, int_attribs);
    free(int_attribs);
    return display;
 }
@@ -754,14 +762,9 @@ eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
                                         attrib_list);
 }
 
-
-static EGLSurface EGLAPIENTRY
-eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config,
-                                  void *native_window,
-                                  const EGLint *attrib_list)
+static void *
+fixupNativeWindow(_EGLDisplay *disp, void *native_window)
 {
-   _EGLDisplay *disp = _eglLockDisplay(dpy);
-
 #ifdef HAVE_X11_PLATFORM
    if (disp->Platform == _EGL_PLATFORM_X11 && native_window != NULL) {
       /* The `native_window` parameter for the X11 platform differs between
@@ -771,9 +774,20 @@ eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config,
        * `Window*`.  Convert `Window*` to `Window` because that's what
        * dri2_x11_create_window_surface() expects.
        */
-      native_window = (void*) (* (Window*) native_window);
+      return (void *)(* (Window*) native_window);
    }
 #endif
+   return native_window;
+}
+
+static EGLSurface EGLAPIENTRY
+eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config,
+                                  void *native_window,
+                                  const EGLint *attrib_list)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+
+   native_window = fixupNativeWindow(disp, native_window);
 
    return _eglCreateWindowSurfaceCommon(disp, config, native_window,
                                         attrib_list);
@@ -785,18 +799,36 @@ eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config,
                                void *native_window,
                                const EGLAttrib *attrib_list)
 {
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
    EGLSurface surface;
    EGLint *int_attribs = _eglConvertAttribsToInt(attrib_list);
 
    if (attrib_list && !int_attribs)
       RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_NO_SURFACE);
 
-   surface = eglCreatePlatformWindowSurfaceEXT(dpy, config, native_window,
-                                               int_attribs);
+   native_window = fixupNativeWindow(disp, native_window);
+   surface = _eglCreateWindowSurfaceCommon(disp, config, native_window,
+                                           int_attribs);
    free(int_attribs);
    return surface;
 }
 
+static void *
+fixupNativePixmap(_EGLDisplay *disp, void *native_pixmap)
+{
+#ifdef HAVE_X11_PLATFORM
+      /* The `native_pixmap` parameter for the X11 platform differs between
+       * eglCreatePixmapSurface() and eglCreatePlatformPixmapSurfaceEXT(). In
+       * eglCreatePixmapSurface(), the type of `native_pixmap` is an Xlib
+       * `Pixmap`. In eglCreatePlatformPixmapSurfaceEXT(), the type is
+       * `Pixmap*`.  Convert `Pixmap*` to `Pixmap` because that's what
+       * dri2_x11_create_pixmap_surface() expects.
+       */
+   if (disp->Platform == _EGL_PLATFORM_X11 && native_pixmap != NULL)
+      return (void *)(* (Pixmap*) native_pixmap);
+#endif
+   return native_pixmap;
+}
 
 static EGLSurface
 _eglCreatePixmapSurfaceCommon(_EGLDisplay *disp, EGLConfig config,
@@ -833,19 +865,7 @@ eglCreatePlatformPixmapSurfaceEXT(EGLDisplay dpy, EGLConfig config,
 {
    _EGLDisplay *disp = _eglLockDisplay(dpy);
 
-#ifdef HAVE_X11_PLATFORM
-      /* The `native_pixmap` parameter for the X11 platform differs between
-       * eglCreatePixmapSurface() and eglCreatePlatformPixmapSurfaceEXT(). In
-       * eglCreatePixmapSurface(), the type of `native_pixmap` is an Xlib
-       * `Pixmap`. In eglCreatePlatformPixmapSurfaceEXT(), the type is
-       * `Pixmap*`.  Convert `Pixmap*` to `Pixmap` because that's what
-       * dri2_x11_create_pixmap_surface() expects.
-       */
-   if (disp->Platform == _EGL_PLATFORM_X11 && native_pixmap != NULL) {
-      native_pixmap = (void*) (* (Pixmap*) native_pixmap);
-   }
-#endif
-
+   native_pixmap = fixupNativePixmap(disp, native_pixmap);
    return _eglCreatePixmapSurfaceCommon(disp, config, native_pixmap,
                                         attrib_list);
 }
@@ -856,14 +876,16 @@ eglCreatePlatformPixmapSurface(EGLDisplay dpy, EGLConfig config,
                                void *native_pixmap,
                                const EGLAttrib *attrib_list)
 {
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
    EGLSurface surface;
    EGLint *int_attribs = _eglConvertAttribsToInt(attrib_list);
 
    if (attrib_list && !int_attribs)
       RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_NO_SURFACE);
 
-   surface = eglCreatePlatformPixmapSurfaceEXT(dpy, config, native_pixmap,
-                                               int_attribs);
+   native_pixmap = fixupNativePixmap(disp, native_pixmap);
+   surface = _eglCreatePixmapSurfaceCommon(disp, config, native_pixmap,
+                                           int_attribs);
    free(int_attribs);
    return surface;
 }
@@ -1059,8 +1081,8 @@ eglCopyBuffers(EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target)
 }
 
 
-EGLBoolean EGLAPIENTRY
-eglWaitClient(void)
+static EGLBoolean
+_eglWaitClientCommon(void)
 {
    _EGLContext *ctx = _eglGetCurrentContext();
    _EGLDisplay *disp;
@@ -1086,12 +1108,17 @@ eglWaitClient(void)
    RETURN_EGL_EVAL(disp, ret);
 }
 
+EGLBoolean EGLAPIENTRY
+eglWaitClient(void)
+{
+   return _eglWaitClientCommon();
+}
 
 EGLBoolean EGLAPIENTRY
 eglWaitGL(void)
 {
    /* Since we only support OpenGL and GLES, eglWaitGL is equivalent to eglWaitClient. */
-   return eglWaitClient();
+   return _eglWaitClientCommon();
 }
 
 
@@ -1282,11 +1309,10 @@ eglReleaseThread(void)
 }
 
 
-static EGLImage EGLAPIENTRY
-eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+static EGLImage
+_eglCreateImageCommon(_EGLDisplay *disp, EGLContext ctx, EGLenum target,
                   EGLClientBuffer buffer, const EGLint *attr_list)
 {
-   _EGLDisplay *disp = _eglLockDisplay(dpy);
    _EGLContext *context = _eglLookupContext(ctx, disp);
    _EGLDriver *drv;
    _EGLImage *img;
@@ -1310,18 +1336,27 @@ eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
    RETURN_EGL_EVAL(disp, ret);
 }
 
+static EGLImage EGLAPIENTRY
+eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+                  EGLClientBuffer buffer, const EGLint *attr_list)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   return _eglCreateImageCommon(disp, ctx, target, buffer, attr_list);
+}
+
 
 EGLImage EGLAPIENTRY
 eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target,
                EGLClientBuffer buffer, const EGLAttrib *attr_list)
 {
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
    EGLImage image;
    EGLint *int_attribs = _eglConvertAttribsToInt(attr_list);
 
    if (attr_list && !int_attribs)
-      RETURN_EGL_ERROR(NULL, EGL_BAD_ALLOC, EGL_NO_IMAGE);
+      RETURN_EGL_ERROR(disp, EGL_BAD_ALLOC, EGL_NO_IMAGE);
 
-   image = eglCreateImageKHR(dpy, ctx, target, buffer, int_attribs);
+   image = _eglCreateImageCommon(disp, ctx, target, buffer, int_attribs);
    free(int_attribs);
    return image;
 }
@@ -1349,11 +1384,10 @@ eglDestroyImage(EGLDisplay dpy, EGLImage image)
 
 
 static EGLSync
-_eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLint *attrib_list,
+_eglCreateSync(_EGLDisplay *disp, EGLenum type, const EGLint *attrib_list,
                const EGLAttrib *attrib_list64, EGLBoolean is64,
                EGLenum invalid_type_error)
 {
-   _EGLDisplay *disp = _eglLockDisplay(dpy);
    _EGLContext *ctx = _eglGetCurrentContext();
    _EGLDriver *drv;
    _EGLSync *sync;
@@ -1365,7 +1399,7 @@ _eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLint *attrib_list,
       RETURN_EGL_EVAL(disp, EGL_NO_SYNC_KHR);
 
    /* return an error if the client API doesn't support GL_OES_EGL_sync */
-   if (!ctx || ctx->Resource.Display != dpy ||
+   if (!ctx || ctx->Resource.Display != disp ||
        ctx->ClientAPI != EGL_OPENGL_ES_API)
       RETURN_EGL_ERROR(disp, EGL_BAD_MATCH, EGL_NO_SYNC_KHR);
 
@@ -1396,7 +1430,8 @@ _eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLint *attrib_list,
 static EGLSync EGLAPIENTRY
 eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *attrib_list)
 {
-   return _eglCreateSync(dpy, type, attrib_list, NULL, EGL_FALSE,
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   return _eglCreateSync(disp, type, attrib_list, NULL, EGL_FALSE,
                          EGL_BAD_ATTRIBUTE);
 }
 
@@ -1404,7 +1439,8 @@ eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *attrib_list)
 static EGLSync EGLAPIENTRY
 eglCreateSync64KHR(EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)
 {
-   return _eglCreateSync(dpy, type, NULL, attrib_list, EGL_TRUE,
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   return _eglCreateSync(disp, type, NULL, attrib_list, EGL_TRUE,
                          EGL_BAD_ATTRIBUTE);
 }
 
@@ -1412,7 +1448,8 @@ eglCreateSync64KHR(EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)
 EGLSync EGLAPIENTRY
 eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *attrib_list)
 {
-   return _eglCreateSync(dpy, type, NULL, attrib_list, EGL_TRUE,
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   return _eglCreateSync(disp, type, NULL, attrib_list, EGL_TRUE,
                          EGL_BAD_PARAMETER);
 }
 
@@ -1472,11 +1509,9 @@ eglClientWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags, EGLTime timeout)
 }
 
 
-static EGLint EGLAPIENTRY
-eglWaitSyncKHR(EGLDisplay dpy, EGLSync sync, EGLint flags)
+static EGLint
+_eglWaitSyncCommon(_EGLDisplay *disp, _EGLSync *s, EGLint flags)
 {
-   _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGLSync *s = _eglLookupSync(sync, disp);
    _EGLContext *ctx = _eglGetCurrentContext();
    _EGLDriver *drv;
    EGLint ret;
@@ -1497,6 +1532,14 @@ eglWaitSyncKHR(EGLDisplay dpy, EGLSync sync, EGLint flags)
    RETURN_EGL_EVAL(disp, ret);
 }
 
+static EGLint EGLAPIENTRY
+eglWaitSyncKHR(EGLDisplay dpy, EGLSync sync, EGLint flags)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLSync *s = _eglLookupSync(sync, disp);
+   return _eglWaitSyncCommon(disp, s, flags);
+}
+
 
 EGLBoolean EGLAPIENTRY
 eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags)
@@ -1505,7 +1548,9 @@ eglWaitSync(EGLDisplay dpy, EGLSync sync, EGLint flags)
     * EGLBoolean. In both cases, the return values can only be EGL_FALSE and
     * EGL_TRUE.
     */
-   return eglWaitSyncKHR(dpy, sync, flags);
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLSync *s = _eglLookupSync(sync, disp);
+   return _eglWaitSyncCommon(disp, s, flags);
 }
 
 
@@ -1525,11 +1570,9 @@ eglSignalSyncKHR(EGLDisplay dpy, EGLSync sync, EGLenum mode)
 }
 
 
-EGLBoolean EGLAPIENTRY
-eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *value)
+static EGLBoolean
+_eglGetSyncAttribCommon(_EGLDisplay *disp, _EGLSync *s, EGLint attribute, EGLAttrib *value)
 {
-   _EGLDisplay *disp = _eglLockDisplay(dpy);
-   _EGLSync *s = _eglLookupSync(sync, disp);
    _EGLDriver *drv;
    EGLBoolean ret;
 
@@ -1541,10 +1584,20 @@ eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *valu
    RETURN_EGL_EVAL(disp, ret);
 }
 
+EGLBoolean EGLAPIENTRY
+eglGetSyncAttrib(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLAttrib *value)
+{
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLSync *s = _eglLookupSync(sync, disp);
+   return _eglGetSyncAttribCommon(disp, s, attribute, value);
+}
+
 
 static EGLBoolean EGLAPIENTRY
 eglGetSyncAttribKHR(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLint *value)
 {
+   _EGLDisplay *disp = _eglLockDisplay(dpy);
+   _EGLSync *s = _eglLookupSync(sync, disp);
    EGLAttrib attrib;
    EGLBoolean result;
 
@@ -1552,7 +1605,7 @@ eglGetSyncAttribKHR(EGLDisplay dpy, EGLSync sync, EGLint attribute, EGLint *valu
       RETURN_EGL_ERROR(NULL, EGL_BAD_PARAMETER, EGL_FALSE);
 
    attrib = *value;
-   result = eglGetSyncAttrib(dpy, sync, attribute, &attrib);
+   result = _eglGetSyncAttribCommon(disp, s, attribute, &attrib);
 
    /* The EGL_KHR_fence_sync spec says this about eglGetSyncAttribKHR:
     *

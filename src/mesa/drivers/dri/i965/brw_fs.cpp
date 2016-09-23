@@ -76,11 +76,10 @@ fs_inst::init(enum opcode opcode, uint8_t exec_size, const fs_reg &dst,
    case FIXED_GRF:
    case MRF:
    case ATTR:
-      this->regs_written = DIV_ROUND_UP(dst.component_size(exec_size),
-                                        REG_SIZE);
+      this->size_written = dst.component_size(exec_size);
       break;
    case BAD_FILE:
-      this->regs_written = 0;
+      this->size_written = 0;
       break;
    case IMM:
    case UNIFORM:
@@ -173,12 +172,12 @@ fs_visitor::VARYING_PULL_CONSTANT_LOAD(const fs_builder &bld,
     * be any component of a vector, and then we load 4 contiguous
     * components starting from that.
     *
-    * We break down the const_offset to a portion added to the variable
-    * offset and a portion done using reg_offset, which means that if you
-    * have GLSL using something like "uniform vec4 a[20]; gl_FragColor =
-    * a[i]", we'll temporarily generate 4 vec4 loads from offset i * 4, and
-    * CSE can later notice that those loads are all the same and eliminate
-    * the redundant ones.
+    * We break down the const_offset to a portion added to the variable offset
+    * and a portion done using fs_reg::offset, which means that if you have
+    * GLSL using something like "uniform vec4 a[20]; gl_FragColor = a[i]",
+    * we'll temporarily generate 4 vec4 loads from offset i * 4, and CSE can
+    * later notice that those loads are all the same and eliminate the
+    * redundant ones.
     */
    fs_reg vec4_offset = vgrf(glsl_type::uint_type);
    bld.ADD(vec4_offset, varying_offset, brw_imm_ud(const_offset & ~0xf));
@@ -192,7 +191,7 @@ fs_visitor::VARYING_PULL_CONSTANT_LOAD(const fs_builder &bld,
    fs_reg vec4_result = bld.vgrf(BRW_REGISTER_TYPE_F, 4);
    fs_inst *inst = bld.emit(FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_LOGICAL,
                             vec4_result, surf_index, vec4_offset);
-   inst->regs_written = 4 * bld.dispatch_width() / 8;
+   inst->size_written = 4 * vec4_result.component_size(inst->exec_size);
 
    if (type_sz(dst.type) == 8) {
       shuffle_32bit_load_result_to_64bit_data(
@@ -239,12 +238,6 @@ fs_inst::equals(fs_inst *inst) const
            shadow_compare == inst->shadow_compare &&
            exec_size == inst->exec_size &&
            offset == inst->offset);
-}
-
-bool
-fs_inst::overwrites_reg(const fs_reg &reg) const
-{
-   return reg.in_range(dst, regs_written);
 }
 
 bool
@@ -354,10 +347,10 @@ fs_inst::is_copy_payload(const brw::simple_allocator &grf_alloc) const
       return false;
 
    fs_reg reg = this->src[0];
-   if (reg.file != VGRF || reg.reg_offset != 0 || reg.stride == 0)
+   if (reg.file != VGRF || reg.offset != 0 || reg.stride != 1)
       return false;
 
-   if (grf_alloc.sizes[reg.nr] != this->regs_written)
+   if (grf_alloc.sizes[reg.nr] * REG_SIZE != this->size_written)
       return false;
 
    for (int i = 0; i < this->sources; i++) {
@@ -366,7 +359,7 @@ fs_inst::is_copy_payload(const brw::simple_allocator &grf_alloc) const
          return false;
 
       if (i < this->header_size) {
-         reg.reg_offset += 1;
+         reg.offset += REG_SIZE;
       } else {
          reg = horiz_offset(reg, this->exec_size);
       }
@@ -425,8 +418,7 @@ fs_reg::fs_reg()
 fs_reg::fs_reg(struct ::brw_reg reg) :
    backend_reg(reg)
 {
-   this->reg_offset = 0;
-   this->subreg_offset = 0;
+   this->offset = 0;
    this->stride = 1;
    if (this->file == IMM &&
        (this->type != BRW_REGISTER_TYPE_V &&
@@ -440,17 +432,7 @@ bool
 fs_reg::equals(const fs_reg &r) const
 {
    return (this->backend_reg::equals(r) &&
-           subreg_offset == r.subreg_offset &&
            stride == r.stride);
-}
-
-fs_reg &
-fs_reg::set_smear(unsigned subreg)
-{
-   assert(file != ARF && file != FIXED_GRF && file != IMM);
-   subreg_offset = subreg * type_sz(type);
-   stride = 0;
-   return *this;
 }
 
 bool
@@ -565,15 +547,14 @@ fs_visitor::get_timestamp(const fs_builder &bld)
 void
 fs_visitor::emit_shader_time_begin()
 {
-   shader_start_time = get_timestamp(bld.annotate("shader time start"));
-
    /* We want only the low 32 bits of the timestamp.  Since it's running
     * at the GPU clock rate of ~1.2ghz, it will roll over every ~3 seconds,
     * which is plenty of time for our purposes.  It is identical across the
     * EUs, but since it's tracking GPU core speed it will increment at a
     * varying rate as render P-states change.
     */
-   shader_start_time.set_smear(0);
+   shader_start_time = component(
+      get_timestamp(bld.annotate("shader time start")), 0);
 }
 
 void
@@ -584,8 +565,7 @@ fs_visitor::emit_shader_time_end()
    assert(end && ((fs_inst *) end)->eot);
    const fs_builder ibld = bld.annotate("shader time end")
                               .exec_all().at(NULL, end);
-
-   fs_reg shader_end_time = get_timestamp(ibld);
+   const fs_reg timestamp = get_timestamp(ibld);
 
    /* We only use the low 32 bits of the timestamp - see
     * emit_shader_time_begin()).
@@ -594,22 +574,21 @@ fs_visitor::emit_shader_time_end()
     * else that might disrupt timing) by setting smear to 2 and checking if
     * that field is != 0.
     */
-   shader_end_time.set_smear(0);
+   const fs_reg shader_end_time = component(timestamp, 0);
 
    /* Check that there weren't any timestamp reset events (assuming these
     * were the only two timestamp reads that happened).
     */
-   fs_reg reset = shader_end_time;
-   reset.set_smear(2);
+   const fs_reg reset = component(timestamp, 2);
    set_condmod(BRW_CONDITIONAL_Z,
                ibld.AND(ibld.null_reg_ud(), reset, brw_imm_ud(1u)));
    ibld.IF(BRW_PREDICATE_NORMAL);
 
    fs_reg start = shader_start_time;
    start.negate = true;
-   fs_reg diff = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
-   diff.set_smear(0);
-
+   const fs_reg diff = component(fs_reg(VGRF, alloc.allocate(1),
+                                        BRW_REGISTER_TYPE_UD),
+                                 0);
    const fs_builder cbld = ibld.group(1, 0);
    cbld.group(1, 0).ADD(diff, start, shader_end_time);
 
@@ -710,7 +689,7 @@ fs_inst::is_partial_write() const
    return ((this->predicate && this->opcode != BRW_OPCODE_SEL) ||
            (this->exec_size * type_sz(this->dst.type)) < 32 ||
            !this->dst.is_contiguous() ||
-           this->dst.subreg_offset > 0);
+           this->dst.offset % REG_SIZE != 0);
 }
 
 unsigned
@@ -820,8 +799,8 @@ fs_inst::components_read(unsigned i) const
    }
 }
 
-int
-fs_inst::regs_read(int arg) const
+unsigned
+fs_inst::size_read(int arg) const
 {
    switch (opcode) {
    case FS_OPCODE_FB_WRITE:
@@ -840,78 +819,52 @@ fs_inst::regs_read(int arg) const
    case SHADER_OPCODE_TYPED_SURFACE_WRITE:
    case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
       if (arg == 0)
-         return mlen;
+         return mlen * REG_SIZE;
       break;
 
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GEN7:
       /* The payload is actually stored in src1 */
       if (arg == 1)
-         return mlen;
+         return mlen * REG_SIZE;
       break;
 
    case FS_OPCODE_LINTERP:
       if (arg == 1)
-         return 1;
+         return 16;
       break;
 
    case SHADER_OPCODE_LOAD_PAYLOAD:
       if (arg < this->header_size)
-         return 1;
+         return REG_SIZE;
       break;
 
    case CS_OPCODE_CS_TERMINATE:
    case SHADER_OPCODE_BARRIER:
-      return 1;
+      return REG_SIZE;
 
    case SHADER_OPCODE_MOV_INDIRECT:
       if (arg == 0) {
          assert(src[2].file == IMM);
-         unsigned region_length = src[2].ud;
-
-         if (src[0].file == UNIFORM) {
-            assert(region_length % 4 == 0);
-            return region_length / 4;
-         } else if (src[0].file == FIXED_GRF) {
-            /* If the start of the region is not register aligned, then
-             * there's some portion of the register that's technically
-             * unread at the beginning.
-             *
-             * However, the register allocator works in terms of whole
-             * registers, and does not use subnr.  It assumes that the
-             * read starts at the beginning of the register, and extends
-             * regs_read() whole registers beyond that.
-             *
-             * To compensate, we extend the region length to include this
-             * unread portion at the beginning.
-             */
-            if (src[0].subnr)
-               region_length += src[0].subnr;
-
-            return DIV_ROUND_UP(region_length, REG_SIZE);
-         } else {
-            assert(!"Invalid register file");
-         }
+         return src[2].ud;
       }
       break;
 
    default:
       if (is_tex() && arg == 0 && src[0].file == VGRF)
-         return mlen;
+         return mlen * REG_SIZE;
       break;
    }
 
    switch (src[arg].file) {
    case UNIFORM:
    case IMM:
-      return 1;
+      return components_read(arg) * type_sz(src[arg].type);
    case BAD_FILE:
    case ARF:
    case FIXED_GRF:
    case VGRF:
    case ATTR:
-      return DIV_ROUND_UP(components_read(arg) *
-                          src[arg].component_size(exec_size),
-                          REG_SIZE);
+      return components_read(arg) * src[arg].component_size(exec_size);
    case MRF:
       unreachable("MRF registers are not allowed as sources");
    }
@@ -1292,9 +1245,9 @@ fs_visitor::emit_sampleid_setup()
                     brw_imm_v(0x44440000));
       abld.AND(*reg, tmp, brw_imm_w(0xf));
    } else {
-      fs_reg t1(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_D);
-      t1.set_smear(0);
-      fs_reg t2(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_W);
+      const fs_reg t1 = component(fs_reg(VGRF, alloc.allocate(1),
+                                         BRW_REGISTER_TYPE_D), 0);
+      const fs_reg t2(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_W);
 
       /* The PS will be run in MSDISPMODE_PERSAMPLE. For example with
        * 8x multisampling, subspan 0 will represent sample N (where N
@@ -1463,7 +1416,7 @@ fs_visitor::assign_curb_setup()
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       for (unsigned int i = 0; i < inst->sources; i++) {
 	 if (inst->src[i].file == UNIFORM) {
-            int uniform_nr = inst->src[i].nr + inst->src[i].reg_offset;
+            int uniform_nr = inst->src[i].nr + inst->src[i].offset / 4;
             int constant_nr;
             if (uniform_nr >= 0 && uniform_nr < (int) uniforms) {
                constant_nr = push_constant_loc[uniform_nr];
@@ -1485,7 +1438,7 @@ fs_visitor::assign_curb_setup()
             assert(inst->src[i].stride == 0);
             inst->src[i] = byte_offset(
                retype(brw_reg, inst->src[i].type),
-               inst->src[i].subreg_offset);
+               inst->src[i].offset % 4);
 	 }
       }
    }
@@ -1620,7 +1573,7 @@ fs_visitor::convert_attr_sources_to_hw_regs(fs_inst *inst)
          int grf = payload.num_regs +
                    prog_data->curb_read_length +
                    inst->src[i].nr +
-                   inst->src[i].reg_offset;
+                   inst->src[i].offset / REG_SIZE;
 
          /* As explained at brw_reg_from_fs_reg, From the Haswell PRM:
           *
@@ -1642,7 +1595,7 @@ fs_visitor::convert_attr_sources_to_hw_regs(fs_inst *inst)
          unsigned width = inst->src[i].stride == 0 ? 1 : exec_size;
          struct brw_reg reg =
             stride(byte_offset(retype(brw_vec8_grf(grf, 0), inst->src[i].type),
-                               inst->src[i].subreg_offset),
+                               inst->src[i].offset % REG_SIZE),
                    exec_size * inst->src[i].stride,
                    width, inst->src[i].stride);
          reg.abs = inst->src[i].abs;
@@ -1773,14 +1726,14 @@ fs_visitor::split_virtual_grfs()
 
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       if (inst->dst.file == VGRF) {
-         int reg = vgrf_to_reg[inst->dst.nr] + inst->dst.reg_offset;
-         for (int j = 1; j < inst->regs_written; j++)
+         int reg = vgrf_to_reg[inst->dst.nr] + inst->dst.offset / REG_SIZE;
+         for (unsigned j = 1; j < regs_written(inst); j++)
             split_points[reg + j] = false;
       }
       for (int i = 0; i < inst->sources; i++) {
          if (inst->src[i].file == VGRF) {
-            int reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].reg_offset;
-            for (int j = 1; j < inst->regs_read(i); j++)
+            int reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].offset / REG_SIZE;
+            for (unsigned j = 1; j < regs_read(inst, i); j++)
                split_points[reg + j] = false;
          }
       }
@@ -1826,16 +1779,18 @@ fs_visitor::split_virtual_grfs()
 
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       if (inst->dst.file == VGRF) {
-         reg = vgrf_to_reg[inst->dst.nr] + inst->dst.reg_offset;
+         reg = vgrf_to_reg[inst->dst.nr] + inst->dst.offset / REG_SIZE;
          inst->dst.nr = new_virtual_grf[reg];
-         inst->dst.reg_offset = new_reg_offset[reg];
+         inst->dst.offset = new_reg_offset[reg] * REG_SIZE +
+                            inst->dst.offset % REG_SIZE;
          assert((unsigned)new_reg_offset[reg] < alloc.sizes[new_virtual_grf[reg]]);
       }
       for (int i = 0; i < inst->sources; i++) {
 	 if (inst->src[i].file == VGRF) {
-            reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].reg_offset;
+            reg = vgrf_to_reg[inst->src[i].nr] + inst->src[i].offset / REG_SIZE;
             inst->src[i].nr = new_virtual_grf[reg];
-            inst->src[i].reg_offset = new_reg_offset[reg];
+            inst->src[i].offset = new_reg_offset[reg] * REG_SIZE +
+                                  inst->src[i].offset % REG_SIZE;
             assert((unsigned)new_reg_offset[reg] < alloc.sizes[new_virtual_grf[reg]]);
          }
       }
@@ -2001,7 +1956,7 @@ fs_visitor::assign_constant_locations()
          if (inst->src[i].file != UNIFORM)
             continue;
 
-         int constant_nr = inst->src[i].nr + inst->src[i].reg_offset;
+         int constant_nr = inst->src[i].nr + inst->src[i].offset / 4;
 
          if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT && i == 0) {
             assert(inst->src[2].ud % 4 == 0);
@@ -2107,7 +2062,7 @@ fs_visitor::assign_constant_locations()
    stage_prog_data->nr_params = num_push_constants;
    stage_prog_data->nr_pull_params = num_pull_constants;
 
-   /* Up until now, the param[] array has been indexed by reg + reg_offset
+   /* Up until now, the param[] array has been indexed by reg + offset
     * of UNIFORM registers.  Move pull constants into pull_param[] and
     * condense param[] to only contain the uniforms we chose to push.
     *
@@ -2155,7 +2110,7 @@ fs_visitor::lower_constant_loads()
          if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT && i == 0)
             continue;
 
-         unsigned location = inst->src[i].nr + inst->src[i].reg_offset;
+         unsigned location = inst->src[i].nr + inst->src[i].offset / 4;
          if (location >= uniforms)
             continue; /* Out of bounds access */
 
@@ -2182,9 +2137,7 @@ fs_visitor::lower_constant_loads()
          /* Rewrite the instruction to use the temporary VGRF. */
          inst->src[i].file = VGRF;
          inst->src[i].nr = dst.nr;
-         inst->src[i].reg_offset = 0;
-         inst->src[i].set_smear((pull_index & 3) * 4 /
-                                type_sz(inst->src[i].type));
+         inst->src[i].offset = (pull_index & 3) * 4 + inst->src[i].offset % 4;
 
          brw_mark_surface_used(prog_data, index);
       }
@@ -2192,7 +2145,7 @@ fs_visitor::lower_constant_loads()
       if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT &&
           inst->src[0].file == UNIFORM) {
 
-         unsigned location = inst->src[0].nr + inst->src[0].reg_offset;
+         unsigned location = inst->src[0].nr + inst->src[0].offset / 4;
          if (location >= uniforms)
             continue; /* Out of bounds access */
 
@@ -2548,7 +2501,7 @@ fs_visitor::opt_sampler_eot()
    for (unsigned i = 0; i < FB_WRITE_LOGICAL_NUM_SRCS; i++) {
       if (i == FB_WRITE_LOGICAL_SRC_COLOR0) {
          if (!fb_write->src[i].equals(tex_inst->dst) ||
-             fb_write->regs_read(i) != tex_inst->regs_written)
+             fb_write->size_read(i) != tex_inst->size_written)
          return false;
       } else if (i != FB_WRITE_LOGICAL_SRC_COMPONENTS) {
          if (fb_write->src[i].file != BAD_FILE)
@@ -2564,7 +2517,7 @@ fs_visitor::opt_sampler_eot()
    tex_inst->offset |= fb_write->target << 24;
    tex_inst->eot = true;
    tex_inst->dst = ibld.null_reg_ud();
-   tex_inst->regs_written = 0;
+   tex_inst->size_written = 0;
    fb_write->remove(cfg->blocks[cfg->num_blocks - 1]);
 
    /* Marking EOT is sufficient, lower_logical_sends() will notice the EOT
@@ -2606,12 +2559,12 @@ fs_visitor::opt_register_renaming()
 
       if (depth == 0 &&
           inst->dst.file == VGRF &&
-          alloc.sizes[inst->dst.nr] == inst->regs_written &&
+          alloc.sizes[inst->dst.nr] * REG_SIZE == inst->size_written &&
           !inst->is_partial_write()) {
          if (remap[dst] == -1) {
             remap[dst] = dst;
          } else {
-            remap[dst] = alloc.allocate(inst->regs_written);
+            remap[dst] = alloc.allocate(regs_written(inst));
             inst->dst.nr = remap[dst];
             progress = true;
          }
@@ -2679,16 +2632,18 @@ fs_visitor::opt_redundant_discard_jumps()
 
 /**
  * Compute a bitmask with GRF granularity with a bit set for each GRF starting
- * from \p r which overlaps the region starting at \p r and spanning \p n GRF
- * units.
+ * from \p r.offset which overlaps the region starting at \p s.offset and
+ * spanning \p ds bytes.
  */
 static inline unsigned
-mask_relative_to(const fs_reg &r, const fs_reg &s, unsigned n)
+mask_relative_to(const fs_reg &r, const fs_reg &s, unsigned ds)
 {
-   const int rel_offset = (reg_offset(s) - reg_offset(r)) / REG_SIZE;
+   const int rel_offset = reg_offset(s) - reg_offset(r);
+   const int shift = rel_offset / REG_SIZE;
+   const unsigned n = DIV_ROUND_UP(rel_offset % REG_SIZE + ds, REG_SIZE);
    assert(reg_space(r) == reg_space(s) &&
-          rel_offset >= 0 && rel_offset < int(8 * sizeof(unsigned)));
-   return ((1 << n) - 1) << rel_offset;
+          shift >= 0 && shift < int(8 * sizeof(unsigned)));
+   return ((1 << n) - 1) << shift;
 }
 
 bool
@@ -2713,7 +2668,7 @@ fs_visitor::compute_to_mrf()
 	  inst->dst.type != inst->src[0].type ||
 	  inst->src[0].abs || inst->src[0].negate ||
           !inst->src[0].is_contiguous() ||
-          inst->src[0].subreg_offset)
+          inst->src[0].offset % REG_SIZE != 0)
 	 continue;
 
       /* Can't compute-to-MRF this GRF if someone else was going to
@@ -2727,11 +2682,11 @@ fs_visitor::compute_to_mrf()
        * regs_left bitset keeps track of the registers we haven't yet found a
        * generating instruction for.
        */
-      unsigned regs_left = (1 << inst->regs_read(0)) - 1;
+      unsigned regs_left = (1 << regs_read(inst, 0)) - 1;
 
       foreach_inst_in_block_reverse_starting_from(fs_inst, scan_inst, inst) {
-         if (regions_overlap(scan_inst->dst, scan_inst->regs_written * REG_SIZE,
-                             inst->src[0], inst->regs_read(0) * REG_SIZE)) {
+         if (regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->src[0], inst->size_read(0))) {
 	    /* Found the last thing to write our reg we want to turn
 	     * into a compute-to-MRF.
 	     */
@@ -2748,9 +2703,8 @@ fs_visitor::compute_to_mrf()
              * would need us to understand coalescing out more than one MOV at
              * a time.
              */
-            if (scan_inst->dst.reg_offset < inst->src[0].reg_offset ||
-                scan_inst->dst.reg_offset + scan_inst->regs_written >
-                inst->src[0].reg_offset + inst->regs_read(0))
+            if (!region_contained_in(scan_inst->dst, scan_inst->size_written,
+                                     inst->src[0], inst->size_read(0)))
                break;
 
 	    /* SEND instructions can't have MRF as a destination. */
@@ -2768,7 +2722,7 @@ fs_visitor::compute_to_mrf()
 
             /* Clear the bits for any registers this instruction overwrites. */
             regs_left &= ~mask_relative_to(
-               inst->src[0], scan_inst->dst, scan_inst->regs_written);
+               inst->src[0], scan_inst->dst, scan_inst->size_written);
             if (!regs_left)
                break;
 	 }
@@ -2785,16 +2739,16 @@ fs_visitor::compute_to_mrf()
 	  */
 	 bool interfered = false;
 	 for (int i = 0; i < scan_inst->sources; i++) {
-            if (regions_overlap(scan_inst->src[i], scan_inst->regs_read(i) * REG_SIZE,
-                                inst->src[0], inst->regs_read(0) * REG_SIZE)) {
+            if (regions_overlap(scan_inst->src[i], scan_inst->size_read(i),
+                                inst->src[0], inst->size_read(0))) {
 	       interfered = true;
 	    }
 	 }
 	 if (interfered)
 	    break;
 
-         if (regions_overlap(scan_inst->dst, scan_inst->regs_written * REG_SIZE,
-                             inst->dst, inst->regs_written * REG_SIZE)) {
+         if (regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->dst, inst->size_written)) {
 	    /* If somebody else writes our MRF here, we can't
 	     * compute-to-MRF before that.
 	     */
@@ -2803,7 +2757,7 @@ fs_visitor::compute_to_mrf()
 
          if (scan_inst->mlen > 0 && scan_inst->base_mrf != -1 &&
              regions_overlap(fs_reg(MRF, scan_inst->base_mrf), scan_inst->mlen * REG_SIZE,
-                             inst->dst, inst->regs_written * REG_SIZE)) {
+                             inst->dst, inst->size_written)) {
 	    /* Found a SEND instruction, which means that there are
 	     * live values in MRFs from base_mrf to base_mrf +
 	     * scan_inst->mlen - 1.  Don't go pushing our MRF write up
@@ -2819,40 +2773,40 @@ fs_visitor::compute_to_mrf()
       /* Found all generating instructions of our MRF's source value, so it
        * should be safe to rewrite them to point to the MRF directly.
        */
-      regs_left = (1 << inst->regs_read(0)) - 1;
+      regs_left = (1 << regs_read(inst, 0)) - 1;
 
       foreach_inst_in_block_reverse_starting_from(fs_inst, scan_inst, inst) {
-         if (regions_overlap(scan_inst->dst, scan_inst->regs_written * REG_SIZE,
-                             inst->src[0], inst->regs_read(0) * REG_SIZE)) {
+         if (regions_overlap(scan_inst->dst, scan_inst->size_written,
+                             inst->src[0], inst->size_read(0))) {
             /* Clear the bits for any registers this instruction overwrites. */
             regs_left &= ~mask_relative_to(
-               inst->src[0], scan_inst->dst, scan_inst->regs_written);
+               inst->src[0], scan_inst->dst, scan_inst->size_written);
 
-            const unsigned rel_offset = (reg_offset(scan_inst->dst) -
-                                         reg_offset(inst->src[0])) / REG_SIZE;
+            const unsigned rel_offset = reg_offset(scan_inst->dst) -
+                                        reg_offset(inst->src[0]);
 
             if (inst->dst.nr & BRW_MRF_COMPR4) {
                /* Apply the same address transformation done by the hardware
                 * for COMPR4 MRF writes.
                 */
-               assert(rel_offset < 2);
-               scan_inst->dst.nr = inst->dst.nr + rel_offset * 4;
+               assert(rel_offset < 2 * REG_SIZE);
+               scan_inst->dst.nr = inst->dst.nr + rel_offset / REG_SIZE * 4;
 
                /* Clear the COMPR4 bit if the generating instruction is not
                 * compressed.
                 */
-               if (scan_inst->regs_written < 2)
+               if (scan_inst->size_written < 2 * REG_SIZE)
                   scan_inst->dst.nr &= ~BRW_MRF_COMPR4;
 
             } else {
                /* Calculate the MRF number the result of this instruction is
                 * ultimately written to.
                 */
-               scan_inst->dst.nr = inst->dst.nr + rel_offset;
+               scan_inst->dst.nr = inst->dst.nr + rel_offset / REG_SIZE;
             }
 
             scan_inst->dst.file = MRF;
-            scan_inst->dst.reg_offset = 0;
+            scan_inst->dst.offset = inst->dst.offset + rel_offset % REG_SIZE;
             scan_inst->saturate |= inst->saturate;
             if (!regs_left)
                break;
@@ -2880,6 +2834,14 @@ fs_visitor::eliminate_find_live_channel()
 {
    bool progress = false;
    unsigned depth = 0;
+
+   if (!brw_stage_has_packed_dispatch(devinfo, stage, stage_prog_data)) {
+      /* The optimization below assumes that channel zero is live on thread
+       * dispatch, which may not be the case if the fixed function dispatches
+       * threads sparsely.
+       */
+      return false;
+   }
 
    foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
       switch (inst->opcode) {
@@ -3024,9 +2986,9 @@ fs_visitor::remove_duplicate_mrf_writes()
       /* Clear out any MRF move records whose sources got overwritten. */
       for (unsigned i = 0; i < ARRAY_SIZE(last_mrf_move); i++) {
          if (last_mrf_move[i] &&
-             regions_overlap(inst->dst, inst->regs_written * REG_SIZE,
+             regions_overlap(inst->dst, inst->size_written,
                              last_mrf_move[i]->src[0],
-                             last_mrf_move[i]->regs_read(0) * REG_SIZE)) {
+                             last_mrf_move[i]->size_read(0))) {
             last_mrf_move[i] = NULL;
          }
       }
@@ -3086,7 +3048,7 @@ void
 fs_visitor::insert_gen4_pre_send_dependency_workarounds(bblock_t *block,
                                                         fs_inst *inst)
 {
-   int write_len = inst->regs_written;
+   int write_len = regs_written(inst);
    int first_write_grf = inst->dst.nr;
    bool needs_dep[BRW_MAX_MRF(devinfo->gen)];
    assert(write_len < (int)sizeof(needs_dep) - 1);
@@ -3119,7 +3081,7 @@ fs_visitor::insert_gen4_pre_send_dependency_workarounds(bblock_t *block,
        * dependency has more latency than a MOV.
        */
       if (scan_inst->dst.file == VGRF) {
-         for (int i = 0; i < scan_inst->regs_written; i++) {
+         for (unsigned i = 0; i < regs_written(scan_inst); i++) {
             int reg = scan_inst->dst.nr + i;
 
             if (reg >= first_write_grf &&
@@ -3157,7 +3119,7 @@ fs_visitor::insert_gen4_pre_send_dependency_workarounds(bblock_t *block,
 void
 fs_visitor::insert_gen4_post_send_dependency_workarounds(bblock_t *block, fs_inst *inst)
 {
-   int write_len = inst->regs_written;
+   int write_len = regs_written(inst);
    int first_write_grf = inst->dst.nr;
    bool needs_dep[BRW_MAX_MRF(devinfo->gen)];
    assert(write_len < (int)sizeof(needs_dep) - 1);
@@ -3212,10 +3174,6 @@ fs_visitor::insert_gen4_send_dependency_workarounds()
 
    bool progress = false;
 
-   /* Note that we're done with register allocation, so GRF fs_regs always
-    * have a .reg_offset of 0.
-    */
-
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       if (inst->mlen != 0 && inst->dst.file == VGRF) {
          insert_gen4_pre_send_dependency_workarounds(block, inst);
@@ -3264,7 +3222,7 @@ fs_visitor::lower_uniform_pull_constant_loads()
              * mode.  Reserve space for the register.
             */
             offset = payload = fs_reg(VGRF, alloc.allocate(2));
-            offset.reg_offset++;
+            offset.offset += REG_SIZE;
             inst->mlen = 2;
          } else {
             offset = payload = fs_reg(VGRF, alloc.allocate(1));
@@ -3499,62 +3457,27 @@ fs_visitor::lower_integer_multiplication()
                         inst->dst.type);
 
             if (devinfo->gen >= 7) {
-               fs_reg src1_0_w = inst->src[1];
-               fs_reg src1_1_w = inst->src[1];
-
                if (inst->src[1].file == IMM) {
-                  src1_0_w.ud &= 0xffff;
-                  src1_1_w.ud >>= 16;
+                  ibld.MUL(low, inst->src[0],
+                           brw_imm_uw(inst->src[1].ud & 0xffff));
+                  ibld.MUL(high, inst->src[0],
+                           brw_imm_uw(inst->src[1].ud >> 16));
                } else {
-                  src1_0_w.type = BRW_REGISTER_TYPE_UW;
-                  if (src1_0_w.stride != 0) {
-                     assert(src1_0_w.stride == 1);
-                     src1_0_w.stride = 2;
-                  }
-
-                  src1_1_w.type = BRW_REGISTER_TYPE_UW;
-                  if (src1_1_w.stride != 0) {
-                     assert(src1_1_w.stride == 1);
-                     src1_1_w.stride = 2;
-                  }
-                  src1_1_w.subreg_offset += type_sz(BRW_REGISTER_TYPE_UW);
+                  ibld.MUL(low, inst->src[0],
+                           subscript(inst->src[1], BRW_REGISTER_TYPE_UW, 0));
+                  ibld.MUL(high, inst->src[0],
+                           subscript(inst->src[1], BRW_REGISTER_TYPE_UW, 1));
                }
-               ibld.MUL(low, inst->src[0], src1_0_w);
-               ibld.MUL(high, inst->src[0], src1_1_w);
             } else {
-               fs_reg src0_0_w = inst->src[0];
-               fs_reg src0_1_w = inst->src[0];
-
-               src0_0_w.type = BRW_REGISTER_TYPE_UW;
-               if (src0_0_w.stride != 0) {
-                  assert(src0_0_w.stride == 1);
-                  src0_0_w.stride = 2;
-               }
-
-               src0_1_w.type = BRW_REGISTER_TYPE_UW;
-               if (src0_1_w.stride != 0) {
-                  assert(src0_1_w.stride == 1);
-                  src0_1_w.stride = 2;
-               }
-               src0_1_w.subreg_offset += type_sz(BRW_REGISTER_TYPE_UW);
-
-               ibld.MUL(low, src0_0_w, inst->src[1]);
-               ibld.MUL(high, src0_1_w, inst->src[1]);
+               ibld.MUL(low, subscript(inst->src[0], BRW_REGISTER_TYPE_UW, 0),
+                        inst->src[1]);
+               ibld.MUL(high, subscript(inst->src[0], BRW_REGISTER_TYPE_UW, 1),
+                        inst->src[1]);
             }
 
-            fs_reg dst = inst->dst;
-            dst.type = BRW_REGISTER_TYPE_UW;
-            dst.subreg_offset = 2;
-            dst.stride = 2;
-
-            high.type = BRW_REGISTER_TYPE_UW;
-            high.stride = 2;
-
-            low.type = BRW_REGISTER_TYPE_UW;
-            low.subreg_offset = 2;
-            low.stride = 2;
-
-            ibld.ADD(dst, low, high);
+            ibld.ADD(subscript(inst->dst, BRW_REGISTER_TYPE_UW, 1),
+                     subscript(low, BRW_REGISTER_TYPE_UW, 1),
+                     subscript(high, BRW_REGISTER_TYPE_UW, 0));
 
             if (inst->conditional_mod || orig_dst.file == MRF) {
                set_condmod(inst->conditional_mod,
@@ -3800,7 +3723,7 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
       /* Send from the GRF */
       fs_reg payload = fs_reg(VGRF, -1, BRW_REGISTER_TYPE_F);
       load = bld.LOAD_PAYLOAD(payload, sources, length, payload_header_size);
-      payload.nr = bld.shader->alloc.allocate(load->regs_written);
+      payload.nr = bld.shader->alloc.allocate(regs_written(load));
       load->dst = payload;
 
       inst->src[0] = payload;
@@ -3821,7 +3744,7 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
    }
 
    inst->opcode = FS_OPCODE_FB_WRITE;
-   inst->mlen = load->regs_written;
+   inst->mlen = regs_written(load);
    inst->header_size = header_size;
 }
 
@@ -4069,7 +3992,7 @@ lower_sampler_logical_send_gen7(const fs_builder &bld, fs_inst *inst, opcode op,
                                 unsigned grad_components)
 {
    const gen_device_info *devinfo = bld.shader->devinfo;
-   int reg_width = bld.dispatch_width() / 8;
+   unsigned reg_width = bld.dispatch_width() / 8;
    unsigned header_size = 0, length = 0;
    fs_reg sources[MAX_SAMPLER_MESSAGE_SIZE];
    for (unsigned i = 0; i < ARRAY_SIZE(sources); i++)
@@ -4097,9 +4020,9 @@ lower_sampler_logical_send_gen7(const fs_builder &bld, fs_inst *inst, opcode op,
        * and we have an explicit header, we need to set up the sampler
        * writemask.  It's reversed from normal: 1 means "don't write".
        */
-      if (!inst->eot && inst->regs_written != 4 * reg_width) {
-         assert((inst->regs_written % reg_width) == 0);
-         unsigned mask = ~((1 << (inst->regs_written / reg_width)) - 1) & 0xf;
+      if (!inst->eot && regs_written(inst) != 4 * reg_width) {
+         assert(regs_written(inst) % reg_width == 0);
+         unsigned mask = ~((1 << (regs_written(inst) / reg_width)) - 1) & 0xf;
          inst->offset |= mask << 12;
       }
    }
@@ -4603,10 +4526,10 @@ get_fpu_lowered_simd_width(const struct gen_device_info *devinfo,
     * which is the one that is going to limit the overall execution size of
     * the instruction due to this rule.
     */
-   unsigned reg_count = inst->regs_written;
+   unsigned reg_count = DIV_ROUND_UP(inst->size_written, REG_SIZE);
 
    for (unsigned i = 0; i < inst->sources; i++)
-      reg_count = MAX2(reg_count, (unsigned)inst->regs_read(i));
+      reg_count = MAX2(reg_count, DIV_ROUND_UP(inst->size_read(i), REG_SIZE));
 
    /* Calculate the maximum execution size of the instruction based on the
     * factor by which it goes over the hardware limit of 2 GRFs.
@@ -4630,13 +4553,14 @@ get_fpu_lowered_simd_width(const struct gen_device_info *devinfo,
     */
    if (devinfo->gen < 8) {
       for (unsigned i = 0; i < inst->sources; i++) {
-         if (inst->regs_written == 2 &&
-             inst->regs_read(i) != 0 && inst->regs_read(i) != 2 &&
+         if (inst->size_written > REG_SIZE &&
+             inst->size_read(i) != 0 && inst->size_read(i) <= REG_SIZE &&
              !is_uniform(inst->src[i]) &&
              !(type_sz(inst->dst.type) == 4 && inst->dst.stride == 1 &&
-               type_sz(inst->src[i].type) == 2 && inst->src[i].stride == 1))
-            max_width = MIN2(max_width, inst->exec_size /
-                             inst->regs_written);
+               type_sz(inst->src[i].type) == 2 && inst->src[i].stride == 1)) {
+            const unsigned reg_count = DIV_ROUND_UP(inst->size_written, REG_SIZE);
+            max_width = MIN2(max_width, inst->exec_size / reg_count);
+         }
       }
    }
 
@@ -4681,9 +4605,10 @@ get_fpu_lowered_simd_width(const struct gen_device_info *devinfo,
     * In this situation we calculate the maximum size of the split
     * instructions so they only ever write to a single register.
     */
-   if (devinfo->gen < 8 && inst->regs_written > 1 &&
+   if (devinfo->gen < 8 && inst->size_written > REG_SIZE &&
        !inst->force_writemask_all) {
-      const unsigned channels_per_grf = inst->exec_size / inst->regs_written;
+      const unsigned channels_per_grf = inst->exec_size /
+         DIV_ROUND_UP(inst->size_written, REG_SIZE);
       unsigned exec_type_size = 0;
       for (int i = 0; i < inst->sources; i++) {
          if (inst->src[i].file != BAD_FILE)
@@ -5087,8 +5012,7 @@ needs_dst_copy(const fs_builder &lbld, const fs_inst *inst)
     * the results of multiple lowered instructions in order to make sure that
     * they end up arranged correctly in the original destination region.
     */
-   if (inst->regs_written * REG_SIZE >
-       inst->dst.component_size(inst->exec_size))
+   if (inst->size_written > inst->dst.component_size(inst->exec_size))
       return true;
 
    /* If the lowered execution size is larger than the original the result of
@@ -5111,8 +5035,8 @@ needs_dst_copy(const fs_builder &lbld, const fs_inst *inst)
        * group which could cause one of the lowered instructions to overwrite
        * the data read from the same source by other lowered instructions.
        */
-      if (regions_overlap(inst->dst, inst->regs_written * REG_SIZE,
-                          inst->src[i], inst->regs_read(i) * REG_SIZE) &&
+      if (regions_overlap(inst->dst, inst->size_written,
+                          inst->src[i], inst->size_read(i)) &&
           !inst->dst.equals(inst->src[i]))
         return true;
    }
@@ -5138,8 +5062,8 @@ emit_zip(const fs_builder &lbld, bblock_t *block, fs_inst *inst)
 
    /* Specified channel group from the destination region. */
    const fs_reg dst = horiz_offset(inst->dst, lbld.group());
-   const unsigned dst_size = inst->regs_written * REG_SIZE /
-            inst->dst.component_size(inst->exec_size);
+   const unsigned dst_size = inst->size_written /
+      inst->dst.component_size(inst->exec_size);
 
    if (needs_dst_copy(lbld, inst)) {
       const fs_reg tmp = lbld.vgrf(inst->dst.type, dst_size);
@@ -5191,7 +5115,7 @@ fs_visitor::lower_simd_width()
           * original or the lowered instruction, whichever is lower.
           */
          const unsigned n = DIV_ROUND_UP(inst->exec_size, lower_width);
-         const unsigned dst_size = inst->regs_written * REG_SIZE /
+         const unsigned dst_size = inst->size_written /
             inst->dst.component_size(inst->exec_size);
 
          assert(!inst->writes_accumulator && !inst->mlen);
@@ -5215,9 +5139,8 @@ fs_visitor::lower_simd_width()
                split_inst.src[j] = emit_unzip(lbld, block, inst, j);
 
             split_inst.dst = emit_zip(lbld, block, inst);
-            split_inst.regs_written = DIV_ROUND_UP(
-               split_inst.dst.component_size(lower_width) * dst_size,
-               REG_SIZE);
+            split_inst.size_written =
+               split_inst.dst.component_size(lower_width) * dst_size;
 
             lbld.emit(split_inst);
          }
@@ -5314,10 +5237,6 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
    switch (inst->dst.file) {
    case VGRF:
       fprintf(file, "vgrf%d", inst->dst.nr);
-      if (alloc.sizes[inst->dst.nr] != inst->regs_written ||
-          inst->dst.subreg_offset)
-         fprintf(file, "+%d.%d",
-                 inst->dst.reg_offset, inst->dst.subreg_offset);
       break;
    case FIXED_GRF:
       fprintf(file, "g%d", inst->dst.nr);
@@ -5329,10 +5248,10 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
       fprintf(file, "(null)");
       break;
    case UNIFORM:
-      fprintf(file, "***u%d***", inst->dst.nr + inst->dst.reg_offset);
+      fprintf(file, "***u%d***", inst->dst.nr);
       break;
    case ATTR:
-      fprintf(file, "***attr%d***", inst->dst.nr + inst->dst.reg_offset);
+      fprintf(file, "***attr%d***", inst->dst.nr);
       break;
    case ARF:
       switch (inst->dst.nr) {
@@ -5352,12 +5271,19 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
          fprintf(file, "arf%d.%d", inst->dst.nr & 0xf, inst->dst.subnr);
          break;
       }
-      if (inst->dst.subnr)
-         fprintf(file, "+%d", inst->dst.subnr);
       break;
    case IMM:
       unreachable("not reached");
    }
+
+   if (inst->dst.offset ||
+       (inst->dst.file == VGRF &&
+        alloc.sizes[inst->dst.nr] * REG_SIZE != inst->size_written)) {
+      const unsigned reg_size = (inst->dst.file == UNIFORM ? 4 : REG_SIZE);
+      fprintf(file, "+%d.%d", inst->dst.offset / reg_size,
+              inst->dst.offset % reg_size);
+   }
+
    if (inst->dst.stride != 1)
       fprintf(file, "<%u>", inst->dst.stride);
    fprintf(file, ":%s, ", brw_reg_type_letters(inst->dst.type));
@@ -5370,10 +5296,6 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
       switch (inst->src[i].file) {
       case VGRF:
          fprintf(file, "vgrf%d", inst->src[i].nr);
-         if (alloc.sizes[inst->src[i].nr] != (unsigned)inst->regs_read(i) ||
-             inst->src[i].subreg_offset)
-            fprintf(file, "+%d.%d", inst->src[i].reg_offset,
-                    inst->src[i].subreg_offset);
          break;
       case FIXED_GRF:
          fprintf(file, "g%d", inst->src[i].nr);
@@ -5382,14 +5304,10 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
          fprintf(file, "***m%d***", inst->src[i].nr);
          break;
       case ATTR:
-         fprintf(file, "attr%d+%d", inst->src[i].nr, inst->src[i].reg_offset);
+         fprintf(file, "attr%d", inst->src[i].nr);
          break;
       case UNIFORM:
-         fprintf(file, "u%d", inst->src[i].nr + inst->src[i].reg_offset);
-         if (inst->src[i].subreg_offset) {
-            fprintf(file, "+%d.%d", inst->src[i].reg_offset,
-                    inst->src[i].subreg_offset);
-         }
+         fprintf(file, "u%d", inst->src[i].nr);
          break;
       case BAD_FILE:
          fprintf(file, "(null)");
@@ -5440,10 +5358,17 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
             fprintf(file, "arf%d.%d", inst->src[i].nr & 0xf, inst->src[i].subnr);
             break;
          }
-         if (inst->src[i].subnr)
-            fprintf(file, "+%d", inst->src[i].subnr);
          break;
       }
+
+      if (inst->src[i].offset ||
+          (inst->src[i].file == VGRF &&
+           alloc.sizes[inst->src[i].nr] * REG_SIZE != inst->size_read(i))) {
+         const unsigned reg_size = (inst->src[i].file == UNIFORM ? 4 : REG_SIZE);
+         fprintf(file, "+%d.%d", inst->src[i].offset / reg_size,
+                 inst->src[i].offset % reg_size);
+      }
+
       if (inst->src[i].abs)
          fprintf(file, "|");
 
@@ -6268,7 +6193,7 @@ fs_visitor::run_cs()
    if (devinfo->is_haswell && prog_data->total_shared > 0) {
       /* Move SLM index from g0.0[27:24] to sr0.1[11:8] */
       const fs_builder abld = bld.exec_all().group(1, 0);
-      abld.MOV(retype(suboffset(brw_sr0_reg(), 1), BRW_REGISTER_TYPE_UW),
+      abld.MOV(retype(brw_sr0_reg(1), BRW_REGISTER_TYPE_UW),
                suboffset(retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UW), 1));
    }
 
@@ -6456,50 +6381,6 @@ move_interpolation_to_top(nir_shader *nir)
 }
 
 /**
- * Apply default interpolation settings to FS inputs which don't specify any.
- */
-static void
-brw_nir_set_default_interpolation(const struct gen_device_info *devinfo,
-                                  struct nir_shader *nir,
-                                  bool api_flat_shade,
-                                  bool per_sample_interpolation)
-{
-   assert(nir->stage == MESA_SHADER_FRAGMENT);
-
-   nir_foreach_variable(var, &nir->inputs) {
-      /* Apply default interpolation mode.
-       *
-       * Everything defaults to smooth except for the legacy GL color
-       * built-in variables, which might be flat depending on API state.
-       */
-      if (var->data.interpolation == INTERP_MODE_NONE) {
-         const bool flat = api_flat_shade &&
-            (var->data.location == VARYING_SLOT_COL0 ||
-             var->data.location == VARYING_SLOT_COL1);
-
-         var->data.interpolation = flat ? INTERP_MODE_FLAT
-                                        : INTERP_MODE_SMOOTH;
-      }
-
-      /* Apply 'sample' if necessary for API state. */
-      if (per_sample_interpolation &&
-          var->data.interpolation != INTERP_MODE_FLAT) {
-         var->data.centroid = false;
-         var->data.sample = true;
-      }
-
-      /* On Ironlake and below, there is only one interpolation mode.
-       * Centroid interpolation doesn't mean anything on this hardware --
-       * there is no multisampling.
-       */
-      if (devinfo->gen < 6) {
-         var->data.centroid = false;
-         var->data.sample = false;
-      }
-   }
-}
-
-/**
  * Demote per-sample barycentric intrinsics to centroid.
  *
  * Useful when rendering to a non-multisampled buffer.
@@ -6556,9 +6437,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
    shader = brw_nir_apply_sampler_key(shader, compiler->devinfo, &key->tex,
                                       true);
-   brw_nir_set_default_interpolation(compiler->devinfo, shader,
-                                     key->flat_shade, key->persample_interp);
-   brw_nir_lower_fs_inputs(shader);
+   brw_nir_lower_fs_inputs(shader, compiler->devinfo, key);
    brw_nir_lower_fs_outputs(shader);
    if (!key->multisample_fbo)
       NIR_PASS_V(shader, demote_sample_qualifiers);
@@ -6906,4 +6785,34 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
    g.generate_code(cfg, prog_data->simd_size);
 
    return g.get_assembly(final_assembly_size);
+}
+
+/**
+ * Test the dispatch mask packing assumptions of
+ * brw_stage_has_packed_dispatch().  Call this from e.g. the top of
+ * fs_visitor::emit_nir_code() to cause a GPU hang if any shader invocation is
+ * executed with an unexpected dispatch mask.
+ */
+static UNUSED void
+brw_fs_test_dispatch_packing(const fs_builder &bld)
+{
+   const gl_shader_stage stage = bld.shader->stage;
+
+   if (brw_stage_has_packed_dispatch(bld.shader->devinfo, stage,
+                                     bld.shader->stage_prog_data)) {
+      const fs_builder ubld = bld.exec_all().group(1, 0);
+      const fs_reg tmp = component(bld.vgrf(BRW_REGISTER_TYPE_UD), 0);
+      const fs_reg mask = (stage == MESA_SHADER_FRAGMENT ? brw_vmask_reg() :
+                           brw_dmask_reg());
+
+      ubld.ADD(tmp, mask, brw_imm_ud(1));
+      ubld.AND(tmp, mask, tmp);
+
+      /* This will loop forever if the dispatch mask doesn't have the expected
+       * form '2^n-1', in which case tmp will be non-zero.
+       */
+      bld.emit(BRW_OPCODE_DO);
+      bld.CMP(bld.null_reg_ud(), tmp, brw_imm_ud(0), BRW_CONDITIONAL_NZ);
+      set_predicate(BRW_PREDICATE_NORMAL, bld.emit(BRW_OPCODE_WHILE));
+   }
 }

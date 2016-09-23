@@ -265,7 +265,7 @@ allocate_query_block(struct svga_context *svga)
        * any empty memory block around that can be freed up.
        */
       index = -1;
-      for (i = 0; i < SVGA_QUERY_MAX && index == -1; i++) {
+      for (i = 0; i < SVGA3D_QUERYTYPE_MAX && index == -1; i++) {
          struct svga_qmem_alloc_entry *alloc_entry;
          struct svga_qmem_alloc_entry *prev_alloc_entry = NULL;
 
@@ -380,7 +380,7 @@ allocate_query(struct svga_context *svga,
    int slot_index = -1;
    unsigned offset;
 
-   assert(type < SVGA_QUERY_MAX);
+   assert(type < SVGA3D_QUERYTYPE_MAX);
 
    alloc_entry = svga->gb_query_map[type];
 
@@ -453,7 +453,7 @@ destroy_gb_query_obj(struct svga_context *svga)
    struct svga_winsys_screen *sws = svga_screen(svga->pipe.screen)->sws;
    unsigned i;
 
-   for (i = 0; i < SVGA_QUERY_MAX; i++) {
+   for (i = 0; i < SVGA3D_QUERYTYPE_MAX; i++) {
       struct svga_qmem_alloc_entry *alloc_entry, *next;
       alloc_entry = svga->gb_query_map[i];
       while (alloc_entry) {
@@ -638,11 +638,11 @@ get_query_result_vgpu10(struct svga_context *svga, struct svga_query *sq,
 
    sws->query_get_result(sws, sq->gb_query, sq->offset, &queryState, result, resultLen);
 
-   if (!sq->fence) {
-      /* The query hasn't been submitted yet.  We need to submit it now
-       * since the GL spec says "Querying the state for a given occlusion
-       * query forces that occlusion query to complete within a finite amount
-       * of time."
+   if (queryState != SVGA3D_QUERYSTATE_SUCCEEDED && !sq->fence) {
+      /* We don't have the query result yet, and the query hasn't been
+       * submitted.  We need to submit it now since the GL spec says
+       * "Querying the state for a given occlusion query forces that
+       * occlusion query to complete within a finite amount of time."
        */
       svga_context_flush(svga, &sq->fence);
    }
@@ -731,7 +731,8 @@ svga_create_query(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_FALLBACKS:
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_SURFACE_WRITE_FLUSHES:
@@ -808,7 +809,8 @@ svga_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
    case SVGA_QUERY_MAP_BUFFER_TIME:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_FLUSH_TIME:
@@ -896,8 +898,11 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_MAP_BUFFER_TIME:
       sq->begin_count = svga->hud.map_buffer_time;
       break;
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
-      sq->begin_count = svga->hud.num_resources_mapped;
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+      sq->begin_count = svga->hud.num_buffers_mapped;
+      break;
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
+      sq->begin_count = svga->hud.num_textures_mapped;
       break;
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
       sq->begin_count = svga->hud.num_bytes_uploaded;
@@ -981,11 +986,6 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
       }
       assert(ret == PIPE_OK);
       (void) ret;
-      /* TODO: Delay flushing. We don't really need to flush here, just ensure
-       * that there is one flush before svga_get_query_result attempts to get
-       * the result.
-       */
-      svga_context_flush(svga, NULL);
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -1010,8 +1010,11 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
    case SVGA_QUERY_MAP_BUFFER_TIME:
       sq->end_count = svga->hud.map_buffer_time;
       break;
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
-      sq->end_count = svga->hud.num_resources_mapped;
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+      sq->end_count = svga->hud.num_buffers_mapped;
+      break;
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
+      sq->end_count = svga->hud.num_textures_mapped;
       break;
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
       sq->end_count = svga->hud.num_bytes_uploaded;
@@ -1142,7 +1145,8 @@ svga_get_query_result(struct pipe_context *pipe,
    case SVGA_QUERY_NUM_FLUSHES:
    case SVGA_QUERY_NUM_VALIDATIONS:
    case SVGA_QUERY_MAP_BUFFER_TIME:
-   case SVGA_QUERY_NUM_RESOURCES_MAPPED:
+   case SVGA_QUERY_NUM_BUFFERS_MAPPED:
+   case SVGA_QUERY_NUM_TEXTURES_MAPPED:
    case SVGA_QUERY_NUM_BYTES_UPLOADED:
    case SVGA_QUERY_COMMAND_BUFFER_SIZE:
    case SVGA_QUERY_FLUSH_TIME:

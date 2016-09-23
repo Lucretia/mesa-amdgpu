@@ -44,14 +44,14 @@ struct backend_reg : private brw_reg
    const brw_reg &as_brw_reg() const
    {
       assert(file == ARF || file == FIXED_GRF || file == MRF || file == IMM);
-      assert(reg_offset == 0);
+      assert(offset == 0);
       return static_cast<const brw_reg &>(*this);
    }
 
    brw_reg &as_brw_reg()
    {
       assert(file == ARF || file == FIXED_GRF || file == MRF || file == IMM);
-      assert(reg_offset == 0);
+      assert(offset == 0);
       return static_cast<brw_reg &>(*this);
    }
 
@@ -62,18 +62,9 @@ struct backend_reg : private brw_reg
    bool is_negative_one() const;
    bool is_null() const;
    bool is_accumulator() const;
-   bool in_range(const backend_reg &r, unsigned n) const;
 
-   /**
-    * Offset within the virtual register.
-    *
-    * In the scalar backend, this is in units of a float per pixel for pre-
-    * register allocation registers (i.e., one register in SIMD8 mode and two
-    * registers in SIMD16 mode).
-    *
-    * For uniforms, this is in units of 1 float.
-    */
-   uint16_t reg_offset;
+   /** Offset from the start of the (virtual) register in bytes. */
+   uint16_t offset;
 
    using brw_reg::type;
    using brw_reg::file;
@@ -145,7 +136,7 @@ struct backend_instruction {
    uint8_t mlen; /**< SEND message length */
    int8_t base_mrf; /**< First MRF in the SEND message, if mlen is nonzero. */
    uint8_t target; /**< MRT target. */
-   uint8_t regs_written; /**< Number of registers written by the instruction. */
+   unsigned size_written; /**< Data written to the destination register in bytes. */
 
    enum opcode opcode; /* BRW_OPCODE_* or FS_OPCODE_* */
    enum brw_conditional_mod conditional_mod; /**< BRW_CONDITIONAL_* */

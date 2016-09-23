@@ -564,11 +564,14 @@ struct anv_physical_device {
     uint32_t                                    chipset_id;
     char                                        path[20];
     const char *                                name;
-    const struct gen_device_info *              info;
+    struct gen_device_info                      info;
     uint64_t                                    aperture_size;
     struct brw_compiler *                       compiler;
     struct isl_device                           isl_dev;
     int                                         cmd_parser_version;
+
+    uint32_t                                    eu_total;
+    uint32_t                                    subslice_total;
 
     struct anv_wsi_interface *                  wsi[VK_ICD_WSI_PLATFORM_MAX];
 };

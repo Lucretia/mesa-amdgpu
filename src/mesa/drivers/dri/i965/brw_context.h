@@ -1017,17 +1017,6 @@ struct brw_context
     */
    int num_samples;
 
-   /**
-    * Platform specific constants containing the maximum number of threads
-    * for each pipeline stage.
-    */
-   unsigned max_vs_threads;
-   unsigned max_hs_threads;
-   unsigned max_ds_threads;
-   unsigned max_gs_threads;
-   unsigned max_wm_threads;
-   unsigned max_cs_threads;
-
    /* BRW_NEW_URB_ALLOCATIONS:
     */
    struct {
@@ -1039,12 +1028,6 @@ struct brw_context
       GLuint sfsize;		/* setup data size in urb registers */
 
       bool constrained;
-
-      GLuint min_vs_entries;    /* Minimum number of VS entries */
-      GLuint max_vs_entries;	/* Maximum number of VS entries */
-      GLuint max_hs_entries;	/* Maximum number of HS entries */
-      GLuint max_ds_entries;	/* Maximum number of DS entries */
-      GLuint max_gs_entries;	/* Maximum number of GS entries */
 
       GLuint nr_vs_entries;
       GLuint nr_hs_entries;
@@ -1344,7 +1327,7 @@ struct brw_context
    bool draw_aux_buffer_disabled[MAX_DRAW_BUFFERS];
 
    __DRIcontext *driContext;
-   struct intel_screen *intelScreen;
+   struct intel_screen *screen;
 };
 
 /*======================================================================
@@ -1361,7 +1344,7 @@ extern void intelInitClearFuncs(struct dd_function_table *functions);
 extern const char *const brw_vendor_string;
 
 extern const char *
-brw_get_renderer_string(const struct intel_screen *intelScreen);
+brw_get_renderer_string(const struct intel_screen *screen);
 
 enum {
    DRI_CONF_BO_REUSE_DISABLED,

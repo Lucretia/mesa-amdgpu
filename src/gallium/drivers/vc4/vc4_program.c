@@ -1423,15 +1423,14 @@ vc4_optimize_nir(struct nir_shader *s)
                 progress = false;
 
                 NIR_PASS_V(s, nir_lower_vars_to_ssa);
-                NIR_PASS_V(s, nir_lower_alu_to_scalar);
-                NIR_PASS_V(s, nir_lower_phis_to_scalar);
-
+                NIR_PASS(progress, s, nir_lower_alu_to_scalar);
+                NIR_PASS(progress, s, nir_lower_phis_to_scalar);
                 NIR_PASS(progress, s, nir_copy_prop);
                 NIR_PASS(progress, s, nir_opt_remove_phis);
                 NIR_PASS(progress, s, nir_opt_dce);
                 NIR_PASS(progress, s, nir_opt_dead_cf);
                 NIR_PASS(progress, s, nir_opt_cse);
-                NIR_PASS(progress, s, nir_opt_peephole_select);
+                NIR_PASS(progress, s, nir_opt_peephole_select, 8);
                 NIR_PASS(progress, s, nir_opt_algebraic);
                 NIR_PASS(progress, s, nir_opt_constant_folding);
                 NIR_PASS(progress, s, nir_opt_undef);

@@ -715,7 +715,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          assert(const_offset->u32[0] % 4 == 0);
 
          unsigned offset = const_offset->u32[0] + shift * 4;
-         src.reg_offset = offset / 16;
+         src.offset = ROUND_DOWN_TO(offset, 16);
          shift = (offset % 16) / 4;
          src.swizzle += BRW_SWIZZLE4(shift, shift, shift, shift);
 
@@ -839,7 +839,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          vec4_builder(this).at_end().annotate(current_annotation, base_ir);
       const dst_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_UD, 2);
       bld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp)
-         ->regs_written = 2;
+         ->size_written = 2 * REG_SIZE;
       break;
    }
 

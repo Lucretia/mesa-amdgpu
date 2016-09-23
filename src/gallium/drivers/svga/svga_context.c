@@ -50,7 +50,6 @@
 DEBUG_GET_ONCE_BOOL_OPTION(no_swtnl, "SVGA_NO_SWTNL", FALSE)
 DEBUG_GET_ONCE_BOOL_OPTION(force_swtnl, "SVGA_FORCE_SWTNL", FALSE);
 DEBUG_GET_ONCE_BOOL_OPTION(use_min_mipmap, "SVGA_USE_MIN_MIPMAP", FALSE);
-DEBUG_GET_ONCE_NUM_OPTION(disable_shader, "SVGA_DISABLE_SHADER", ~0);
 DEBUG_GET_ONCE_BOOL_OPTION(no_line_width, "SVGA_NO_LINE_WIDTH", FALSE);
 DEBUG_GET_ONCE_BOOL_OPTION(force_hw_line_stipple, "SVGA_FORCE_HW_LINE_STIPPLE", FALSE);
 
@@ -102,6 +101,7 @@ static void svga_destroy( struct pipe_context *pipe )
    util_bitmask_destroy(svga->stream_output_id_bm);
    util_bitmask_destroy(svga->query_id_bm);
    u_upload_destroy(svga->const0_upload);
+   svga_texture_transfer_map_upload_destroy(svga);
 
    /* free user's constant buffers */
    for (shader = 0; shader < PIPE_SHADER_TYPES; ++shader) {
@@ -162,7 +162,6 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    svga->debug.no_swtnl = debug_get_option_no_swtnl();
    svga->debug.force_swtnl = debug_get_option_force_swtnl();
    svga->debug.use_min_mipmap = debug_get_option_use_min_mipmap();
-   svga->debug.disable_shader = debug_get_option_disable_shader();
    svga->debug.no_line_width = debug_get_option_no_line_width();
    svga->debug.force_hw_line_stipple = debug_get_option_force_hw_line_stipple();
 
@@ -214,6 +213,9 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    if (!svga->const0_upload)
       goto cleanup;
 
+   if (!svga_texture_transfer_map_upload_create(svga))
+      goto cleanup;
+
    /* Avoid shortcircuiting state with initial value of zero.
     */
    memset(&svga->state.hw_clear, 0xcd, sizeof(svga->state.hw_clear));
@@ -248,6 +250,8 @@ struct pipe_context *svga_context_create(struct pipe_screen *screen,
    svga->state.hw_draw.num_vbuffers = 0;
    memset(svga->state.hw_draw.vbuffers, 0,
           sizeof(svga->state.hw_draw.vbuffers));
+   svga->state.hw_draw.const0_buffer = NULL;
+   svga->state.hw_draw.const0_handle = NULL;
 
    /* Create a no-operation blend state which we will bind whenever the
     * requested blend state is impossible (e.g. due to having an integer
@@ -277,6 +281,7 @@ cleanup:
 
    if (svga->const0_upload)
       u_upload_destroy(svga->const0_upload);
+   svga_texture_transfer_map_upload_destroy(svga);
    if (svga->hwtnl)
       svga_hwtnl_destroy(svga->hwtnl);
    if (svga->swc)
@@ -307,6 +312,17 @@ void svga_context_flush( struct svga_context *svga,
 
    svga->curr.nr_fbs = 0;
 
+   /* Unmap the 0th/default constant buffer.  The u_upload_unmap() function
+    * will call pipe_context::transfer_flush_region() to indicate the
+    * region of the buffer which was modified (and needs to be uploaded).
+    */
+   if (svga->state.hw_draw.const0_handle) {
+      assert(svga->state.hw_draw.const0_buffer);
+      u_upload_unmap(svga->const0_upload);
+      pipe_resource_reference(&svga->state.hw_draw.const0_buffer, NULL);
+      svga->state.hw_draw.const0_handle = NULL;
+   }
+
    /* Ensure that texture dma uploads are processed
     * before submitting commands.
     */
@@ -324,6 +340,8 @@ void svga_context_flush( struct svga_context *svga,
    svga->hud.num_flushes++;
 
    svga_screen_cache_flush(svgascreen, fence);
+
+   SVGA3D_ResetLastCommand(svga->swc);
 
    /* To force the re-emission of rendertargets and texture sampler bindings on
     * the next command buffer.

@@ -618,6 +618,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_shader_subroutine),
    EXT(ARB_shader_texture_image_samples),
    EXT(ARB_shader_texture_lod),
+   EXT(ARB_shader_viewport_layer_array),
    EXT(ARB_shading_language_420pack),
    EXT(ARB_shading_language_packing),
    EXT(ARB_tessellation_shader),
@@ -653,6 +654,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(OES_texture_buffer),
    EXT(OES_texture_cube_map_array),
    EXT_AEP(OES_texture_storage_multisample_2d_array),
+   EXT(OES_viewport_array),
 
    /* All other extensions go here, sorted alphabetically.
     */

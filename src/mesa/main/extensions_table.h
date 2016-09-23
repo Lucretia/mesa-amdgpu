@@ -117,6 +117,7 @@ EXT(ARB_shader_storage_buffer_object        , ARB_shader_storage_buffer_object  
 EXT(ARB_shader_subroutine                   , ARB_shader_subroutine                  ,  x , GLC,  x ,  x , 2010)
 EXT(ARB_shader_texture_image_samples        , ARB_shader_texture_image_samples       , GLL, GLC,  x ,  x , 2014)
 EXT(ARB_shader_texture_lod                  , ARB_shader_texture_lod                 , GLL, GLC,  x ,  x , 2009)
+EXT(ARB_shader_viewport_layer_array         , ARB_shader_viewport_layer_array        ,  x , GLC,  x ,  x , 2015)
 EXT(ARB_shading_language_100                , dummy_true                             , GLL,  x ,  x ,  x , 2003)
 EXT(ARB_shading_language_420pack            , ARB_shading_language_420pack           , GLL, GLC,  x ,  x , 2011)
 EXT(ARB_shading_language_packing            , ARB_shading_language_packing           , GLL, GLC,  x ,  x , 2011)
@@ -389,6 +390,7 @@ EXT(OES_texture_npot                        , ARB_texture_non_power_of_two      
 EXT(OES_texture_stencil8                    , ARB_texture_stencil8                   ,  x ,  x ,  x ,  30, 2014)
 EXT(OES_texture_storage_multisample_2d_array, ARB_texture_multisample                ,  x ,  x ,  x ,  31, 2014)
 EXT(OES_vertex_array_object                 , dummy_true                             ,  x ,  x , ES1, ES2, 2010)
+EXT(OES_viewport_array                      , OES_viewport_array                     ,  x ,  x ,  x ,  31, 2010)
 
 EXT(S3_s3tc                                 , ANGLE_texture_compression_dxt          , GLL, GLC,  x ,  x , 1999)
 

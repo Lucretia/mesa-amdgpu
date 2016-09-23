@@ -853,7 +853,9 @@ svga_get_driver_query_info(struct pipe_screen *screen,
             PIPE_DRIVER_QUERY_TYPE_UINT64),
       QUERY("map-buffer-time", SVGA_QUERY_MAP_BUFFER_TIME,
             PIPE_DRIVER_QUERY_TYPE_MICROSECONDS),
-      QUERY("num-resources-mapped", SVGA_QUERY_NUM_RESOURCES_MAPPED,
+      QUERY("num-buffers-mapped", SVGA_QUERY_NUM_BUFFERS_MAPPED,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-textures-mapped", SVGA_QUERY_NUM_TEXTURES_MAPPED,
             PIPE_DRIVER_QUERY_TYPE_UINT64),
       QUERY("num-bytes-uploaded", SVGA_QUERY_NUM_BYTES_UPLOADED,
             PIPE_DRIVER_QUERY_TYPE_BYTES),
@@ -944,6 +946,8 @@ svga_screen_create(struct svga_winsys_screen *sws)
       debug_get_bool_option("SVGA_NO_SURFACE_VIEW", FALSE);
    svgascreen->debug.no_sampler_view =
       debug_get_bool_option("SVGA_NO_SAMPLER_VIEW", FALSE);
+   svgascreen->debug.no_cache_index_buffers =
+      debug_get_bool_option("SVGA_NO_CACHE_INDEX_BUFFERS", FALSE);
 
    screen = &svgascreen->screen;
 

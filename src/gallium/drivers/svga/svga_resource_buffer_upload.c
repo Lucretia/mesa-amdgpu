@@ -166,6 +166,14 @@ svga_buffer_create_host_surface(struct svga_screen *ss,
       if (sbuf->bind_flags & PIPE_BIND_SAMPLER_VIEW)
          sbuf->key.flags |= SVGA3D_SURFACE_BIND_SHADER_RESOURCE;
 
+      if (!sbuf->bind_flags && sbuf->b.b.usage == PIPE_USAGE_STAGING) {
+         /* This surface is to be used with the
+          * SVGA3D_CMD_DX_TRANSFER_FROM_BUFFER command, and no other
+          * bind flags are allowed to be set for this surface.
+          */
+         sbuf->key.flags = SVGA3D_SURFACE_TRANSFER_FROM_BUFFER;
+      }
+
       sbuf->key.size.width = sbuf->b.b.width0;
       sbuf->key.size.height = 1;
       sbuf->key.size.depth = 1;
@@ -620,6 +628,7 @@ svga_buffer_update_hw(struct svga_context *svga, struct svga_buffer *sbuf)
       enum pipe_error ret;
       boolean retry;
       void *map;
+      unsigned i;
 
       assert(sbuf->swbuf);
       if (!sbuf->swbuf)
@@ -639,7 +648,13 @@ svga_buffer_update_hw(struct svga_context *svga, struct svga_buffer *sbuf)
          return PIPE_ERROR;
       }
 
-      memcpy(map, sbuf->swbuf, sbuf->b.b.width0);
+      /* Copy data from malloc'd swbuf to the new hardware buffer */
+      for (i = 0; i < sbuf->map.num_ranges; i++) {
+         unsigned start = sbuf->map.ranges[i].start;
+         unsigned len = sbuf->map.ranges[i].end - start;
+         memcpy((uint8_t *) map + start, (uint8_t *) sbuf->swbuf + start, len);
+      }
+
       svga_buffer_hw_storage_unmap(svga, sbuf);
 
       /* This user/malloc buffer is now indistinguishable from a gpu buffer */

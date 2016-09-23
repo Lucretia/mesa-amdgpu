@@ -672,7 +672,7 @@ backend_shader::backend_shader(const struct brw_compiler *compiler,
 bool
 backend_reg::equals(const backend_reg &r) const
 {
-   return brw_regs_equal(this, &r) && reg_offset == r.reg_offset;
+   return brw_regs_equal(this, &r) && offset == r.offset;
 }
 
 bool
@@ -742,15 +742,6 @@ bool
 backend_reg::is_accumulator() const
 {
    return file == ARF && nr == BRW_ARF_ACCUMULATOR;
-}
-
-bool
-backend_reg::in_range(const backend_reg &r, unsigned n) const
-{
-   return (file == r.file &&
-           nr == r.nr &&
-           reg_offset >= r.reg_offset &&
-           reg_offset < r.reg_offset + n);
 }
 
 bool

@@ -3871,6 +3871,7 @@ struct gl_extensions
    GLboolean ARB_shader_subroutine;
    GLboolean ARB_shader_texture_image_samples;
    GLboolean ARB_shader_texture_lod;
+   GLboolean ARB_shader_viewport_layer_array;
    GLboolean ARB_shading_language_packing;
    GLboolean ARB_shading_language_420pack;
    GLboolean ARB_shadow;
@@ -3951,6 +3952,7 @@ struct gl_extensions
    GLboolean OES_standard_derivatives;
    GLboolean OES_texture_buffer;
    GLboolean OES_texture_cube_map_array;
+   GLboolean OES_viewport_array;
    /* vendor extensions */
    GLboolean AMD_performance_monitor;
    GLboolean AMD_pinned_memory;

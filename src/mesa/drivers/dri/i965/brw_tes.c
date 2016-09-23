@@ -82,8 +82,8 @@ brw_codegen_tes_prog(struct brw_context *brw,
                      struct brw_tess_eval_program *tep,
                      struct brw_tes_prog_key *key)
 {
-   const struct brw_compiler *compiler = brw->intelScreen->compiler;
-   const struct gen_device_info *devinfo = brw->intelScreen->devinfo;
+   const struct brw_compiler *compiler = brw->screen->compiler;
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct brw_stage_state *stage_state = &brw->tes.base;
    nir_shader *nir = tep->program.Base.nir;
    struct brw_tes_prog_data prog_data;
@@ -217,7 +217,7 @@ brw_codegen_tes_prog(struct brw_context *brw,
    /* Scratch space is used for register spilling */
    brw_alloc_stage_scratch(brw, stage_state,
                            prog_data.base.base.total_scratch,
-                           brw->max_ds_threads);
+                           devinfo->max_ds_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_TES_PROG,
                     key, sizeof(*key),

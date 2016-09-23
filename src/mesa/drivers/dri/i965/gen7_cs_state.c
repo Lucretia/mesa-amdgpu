@@ -46,7 +46,7 @@ brw_upload_cs_state(struct brw_context *brw)
    struct brw_stage_state *stage_state = &brw->cs.base;
    struct brw_cs_prog_data *cs_prog_data = brw->cs.prog_data;
    struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
-   const struct gen_device_info *devinfo = brw->intelScreen->devinfo;
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
    if (INTEL_DEBUG & DEBUG_SHADER_TIME) {
       brw_emit_buffer_surface_state(
@@ -96,8 +96,8 @@ brw_upload_cs_state(struct brw_context *brw)
    const uint32_t vfe_num_urb_entries = brw->gen >= 8 ? 2 : 0;
    const uint32_t vfe_gpgpu_mode =
       brw->gen == 7 ? SET_FIELD(1, GEN7_MEDIA_VFE_STATE_GPGPU_MODE) : 0;
-   const uint32_t subslices = MAX2(brw->intelScreen->subslice_total, 1);
-   OUT_BATCH(SET_FIELD(brw->max_cs_threads * subslices - 1,
+   const uint32_t subslices = MAX2(brw->screen->subslice_total, 1);
+   OUT_BATCH(SET_FIELD(devinfo->max_cs_threads * subslices - 1,
                        MEDIA_VFE_STATE_MAX_THREADS) |
              SET_FIELD(vfe_num_urb_entries, MEDIA_VFE_STATE_URB_ENTRIES) |
              SET_FIELD(1, MEDIA_VFE_STATE_RESET_GTW_TIMER) |
@@ -163,7 +163,7 @@ brw_upload_cs_state(struct brw_context *brw)
       brw->gen >= 8 ?
       SET_FIELD(cs_prog_data->threads, GEN8_MEDIA_GPGPU_THREAD_COUNT) :
       SET_FIELD(cs_prog_data->threads, MEDIA_GPGPU_THREAD_COUNT);
-   assert(cs_prog_data->threads <= brw->max_cs_threads);
+   assert(cs_prog_data->threads <= devinfo->max_cs_threads);
 
    const uint32_t slm_size =
       encode_slm_size(devinfo->gen, prog_data->total_shared);

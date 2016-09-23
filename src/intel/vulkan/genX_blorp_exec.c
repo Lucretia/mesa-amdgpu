@@ -24,7 +24,6 @@
 #include <assert.h>
 
 #include "anv_private.h"
-#include "genX_multisample.h"
 
 /* These are defined in anv_private.h and blorp_genX_exec.h */
 #undef __gen_address_type
@@ -32,6 +31,7 @@
 #undef __gen_combine_address
 
 #include "common/gen_l3_config.h"
+#include "common/gen_sample_positions.h"
 #include "blorp/blorp_genX_exec.h"
 
 static void *
@@ -145,43 +145,6 @@ blorp_emit_urb_config(struct blorp_batch *batch, unsigned vs_entry_size)
                         cmd_buffer->state.current_l3_config);
 }
 
-static void
-blorp_emit_3dstate_multisample(struct blorp_batch *batch, unsigned samples)
-{
-   blorp_emit(batch, GENX(3DSTATE_MULTISAMPLE), ms) {
-      ms.NumberofMultisamples       = __builtin_ffs(samples) - 1;
-
-#if GEN_GEN >= 8
-      /* The PRM says that this bit is valid only for DX9:
-       *
-       *    SW can choose to set this bit only for DX9 API. DX10/OGL API's
-       *    should not have any effect by setting or not setting this bit.
-       */
-      ms.PixelPositionOffsetEnable  = false;
-      ms.PixelLocation              = CENTER;
-#else
-      ms.PixelLocation              = PIXLOC_CENTER;
-
-      switch (samples) {
-      case 1:
-         SAMPLE_POS_1X(ms.Sample);
-         break;
-      case 2:
-         SAMPLE_POS_2X(ms.Sample);
-         break;
-      case 4:
-         SAMPLE_POS_4X(ms.Sample);
-         break;
-      case 8:
-         SAMPLE_POS_8X(ms.Sample);
-         break;
-      default:
-         break;
-      }
-#endif
-   }
-}
-
 void genX(blorp_exec)(struct blorp_batch *batch,
                       const struct blorp_params *params);
 
@@ -239,21 +202,6 @@ genX(blorp_exec)(struct blorp_batch *batch,
    }
 
    blorp_exec(batch, params);
-
-   /* BLORP sets DRAWING_RECTANGLE but we always want it set to the maximum.
-    * Since we set it once at driver init and never again, we have to set it
-    * back after invoking blorp.
-    *
-    * TODO: BLORP should assume a max drawing rectangle
-    */
-   blorp_emit(batch, GENX(3DSTATE_DRAWING_RECTANGLE), rect) {
-      rect.ClippedDrawingRectangleYMin = 0;
-      rect.ClippedDrawingRectangleXMin = 0;
-      rect.ClippedDrawingRectangleYMax = UINT16_MAX;
-      rect.ClippedDrawingRectangleXMax = UINT16_MAX;
-      rect.DrawingRectangleOriginY = 0;
-      rect.DrawingRectangleOriginX = 0;
-   }
 
    cmd_buffer->state.vb_dirty = ~0;
    cmd_buffer->state.dirty = ~0;

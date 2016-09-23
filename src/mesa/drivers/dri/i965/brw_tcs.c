@@ -169,7 +169,7 @@ brw_codegen_tcs_prog(struct brw_context *brw,
                      struct brw_tcs_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
-   const struct brw_compiler *compiler = brw->intelScreen->compiler;
+   const struct brw_compiler *compiler = brw->screen->compiler;
    const struct gen_device_info *devinfo = compiler->devinfo;
    struct brw_stage_state *stage_state = &brw->tcs.base;
    nir_shader *nir;
@@ -298,7 +298,7 @@ brw_codegen_tcs_prog(struct brw_context *brw,
    /* Scratch space is used for register spilling */
    brw_alloc_stage_scratch(brw, stage_state,
                            prog_data.base.base.total_scratch,
-                           brw->max_hs_threads);
+                           devinfo->max_hs_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_TCS_PROG,
                     key, sizeof(*key),
