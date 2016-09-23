@@ -1684,8 +1684,7 @@ void radv_CmdNextSubpass(
 	radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs,
 					      2048);
 
-	cmd_buffer->state.subpass++;
-	radv_emit_framebuffer_state(cmd_buffer);
+	radv_cmd_buffer_set_subpass(cmd_buffer, cmd_buffer->state.subpass + 1, true);
 	radv_cmd_buffer_clear_subpass(cmd_buffer);
 }
 
@@ -2086,8 +2085,8 @@ static void radv_handle_cmask_image_transition(struct radv_cmd_buffer *cmd_buffe
 	}
 }
 
-static void radv_initialize_dcc(struct radv_cmd_buffer *cmd_buffer,
-				  struct radv_image *image, uint32_t value)
+void radv_initialize_dcc(struct radv_cmd_buffer *cmd_buffer,
+			 struct radv_image *image, uint32_t value)
 {
 
 	cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_FLUSH_AND_INV_CB |
