@@ -96,6 +96,7 @@ VkResult radv_CreateDescriptorSetLayout(
 			break;
 		case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
 		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+		case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
 			/* main descriptor + fmask descriptor */
 			set_layout->binding[b].size = 64;
 			set_layout->binding[b].buffer_count = 1;
@@ -434,6 +435,9 @@ VkResult radv_CreateDescriptorPool(
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 			bo_size += 96 * pCreateInfo->pPoolSizes[i].descriptorCount;
 			break;
+		default:
+			unreachable("unknown descriptor type\n");
+			break;
 		}
 	}
 
@@ -673,6 +677,7 @@ void radv_UpdateDescriptorSets(
 				break;
 			case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
 			case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+			case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
 				write_image_descriptor(device, ptr, buffer_list,
 						       writeset->pImageInfo + j);
 				break;
