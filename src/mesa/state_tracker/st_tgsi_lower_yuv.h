@@ -21,35 +21,14 @@
  * SOFTWARE.
  */
 
-#ifndef ST_NIR_H
-#define ST_NIR_H
+#ifndef ST_TGSI_LOWER_YUV_H
+#define ST_TGSI_LOWER_YUV_H
 
-#include "st_context.h"
-#include "compiler/shader_enums.h"
+struct tgsi_token;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+extern const struct tgsi_token * st_tgsi_lower_yuv(const struct tgsi_token *tokens,
+                                                   unsigned free_slots,
+                                                   unsigned lower_nv12,
+                                                   unsigned lower_iyuv);
 
-struct nir_shader;
-
-void st_nir_lower_builtin(struct nir_shader *shader);
-void st_nir_lower_tex_src_plane(struct nir_shader *shader, unsigned free_slots,
-                                unsigned lower_2plane, unsigned lower_3plane);
-
-struct nir_shader * st_glsl_to_nir(struct st_context *st, struct gl_program *prog,
-                                   struct gl_shader_program *shader_program,
-                                   gl_shader_stage stage);
-
-void st_finalize_nir(struct st_context *st, struct gl_program *prog, struct nir_shader *nir);
-
-struct gl_program *
-st_nir_get_mesa_program(struct gl_context *ctx,
-                        struct gl_shader_program *shader_program,
-                        struct gl_linked_shader *shader);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* ST_NIR_H */
+#endif /* ST_TGSI_LOWER_YUV_H */

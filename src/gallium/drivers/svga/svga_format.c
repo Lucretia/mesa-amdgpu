@@ -379,7 +379,7 @@ svga_translate_vertex_format_vgpu10(enum pipe_format format,
  * Translate from gallium format to SVGA3D format.
  */
 SVGA3dSurfaceFormat
-svga_translate_format(struct svga_screen *ss,
+svga_translate_format(const struct svga_screen *ss,
                       enum pipe_format format,
                       unsigned bind)
 {
@@ -1686,18 +1686,14 @@ static const struct format_cap format_cap_table[] = {
       SVGA3DFORMAT_OP_OFFSCREEN_RENDERTARGET
    },
    {
-      /* Special case: no devcap / report sampler, render target and
-       * depth/stencil ability
-       */
       "SVGA3D_R32_FLOAT",
       SVGA3D_R32_FLOAT,
-      0, /*SVGA3D_DEVCAP_DXFMT_R32_FLOAT*/
+      SVGA3D_DEVCAP_DXFMT_R32_FLOAT,
       1, 1, 4,
       SVGA3DFORMAT_OP_TEXTURE |
       SVGA3DFORMAT_OP_VOLUMETEXTURE |
       SVGA3DFORMAT_OP_CUBETEXTURE |
-      SVGA3DFORMAT_OP_OFFSCREEN_RENDERTARGET |
-      SVGA3DFORMAT_OP_ZSTENCIL
+      SVGA3DFORMAT_OP_OFFSCREEN_RENDERTARGET
    },
    {
       "SVGA3D_R8G8_SNORM",

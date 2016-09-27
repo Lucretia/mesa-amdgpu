@@ -260,97 +260,6 @@ public:
    }
 };
 
-class barrier_use_visitor : public ir_hierarchical_visitor {
-public:
-   barrier_use_visitor(gl_shader_program *prog)
-      : prog(prog), in_main(false), after_return(false), control_flow(0)
-   {
-   }
-
-   virtual ~barrier_use_visitor()
-   {
-      /* empty */
-   }
-
-   virtual ir_visitor_status visit_enter(ir_function *ir)
-   {
-      if (strcmp(ir->name, "main") == 0)
-         in_main = true;
-
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_leave(ir_function *)
-   {
-      in_main = false;
-      after_return = false;
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_leave(ir_return *)
-   {
-      after_return = true;
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_enter(ir_if *)
-   {
-      ++control_flow;
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_leave(ir_if *)
-   {
-      --control_flow;
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_enter(ir_loop *)
-   {
-      ++control_flow;
-      return visit_continue;
-   }
-
-   virtual ir_visitor_status visit_leave(ir_loop *)
-   {
-      --control_flow;
-      return visit_continue;
-   }
-
-   /* FINISHME: `switch` is not expressed at the IR level -- it's already
-    * been lowered to a mess of `if`s. We'll correctly disallow any use of
-    * barrier() in a conditional path within the switch, but not in a path
-    * which is always hit.
-    */
-
-   virtual ir_visitor_status visit_enter(ir_call *ir)
-   {
-      if (ir->use_builtin && strcmp(ir->callee_name(), "barrier") == 0) {
-         /* Use of barrier(); determine if it is legal: */
-         if (!in_main) {
-            linker_error(prog, "Builtin barrier() may only be used in main");
-            return visit_stop;
-         }
-
-         if (after_return) {
-            linker_error(prog, "Builtin barrier() may not be used after return");
-            return visit_stop;
-         }
-
-         if (control_flow != 0) {
-            linker_error(prog, "Builtin barrier() may not be used inside control flow");
-            return visit_stop;
-         }
-      }
-      return visit_continue;
-   }
-
-private:
-   gl_shader_program *prog;
-   bool in_main, after_return;
-   int control_flow;
-};
-
 /**
  * Visitor that determines the highest stream id to which a (geometry) shader
  * emits vertices. It also checks whether End{Stream}Primitive is ever called.
@@ -2189,14 +2098,13 @@ link_intrastage_shaders(void *mem_ctx,
 	       continue;
 
 	    foreach_in_list(ir_function_signature, sig, &f->signatures) {
-	       if (!sig->is_defined || sig->is_builtin())
+	       if (!sig->is_defined)
 		  continue;
 
 	       ir_function_signature *other_sig =
 		  other->exact_matching_signature(NULL, &sig->parameters);
 
-	       if ((other_sig != NULL) && other_sig->is_defined
-		   && !other_sig->is_builtin()) {
+	       if (other_sig != NULL && other_sig->is_defined) {
 		  linker_error(prog, "function `%s' is multiply defined\n",
 			       f->name);
 		  return NULL;
@@ -2262,42 +2170,7 @@ link_intrastage_shaders(void *mem_ctx,
 					      insertion_point, true, linked);
    }
 
-   /* Check if any shader needs built-in functions. */
-   bool need_builtins = false;
-   for (unsigned i = 0; i < num_shaders; i++) {
-      if (shader_list[i]->info.uses_builtin_functions) {
-         need_builtins = true;
-         break;
-      }
-   }
-
-   bool ok;
-   if (need_builtins) {
-      /* Make a temporary array one larger than shader_list, which will hold
-       * the built-in function shader as well.
-       */
-      gl_shader **linking_shaders = (gl_shader **)
-         calloc(num_shaders + 1, sizeof(gl_shader *));
-
-      ok = linking_shaders != NULL;
-
-      if (ok) {
-         memcpy(linking_shaders, shader_list, num_shaders * sizeof(gl_shader *));
-         _mesa_glsl_initialize_builtin_functions();
-         linking_shaders[num_shaders] = _mesa_glsl_get_builtin_function_shader();
-
-         ok = link_function_calls(prog, linked, linking_shaders, num_shaders + 1);
-
-         free(linking_shaders);
-      } else {
-         _mesa_error_no_memory(__func__);
-      }
-   } else {
-      ok = link_function_calls(prog, linked, shader_list, num_shaders);
-   }
-
-
-   if (!ok) {
+   if (!link_function_calls(prog, linked, shader_list, num_shaders)) {
       _mesa_delete_linked_shader(ctx, linked);
       return NULL;
    }
@@ -2354,14 +2227,6 @@ link_intrastage_shaders(void *mem_ctx,
 
    if (ctx->Const.VertexID_is_zero_based)
       lower_vertex_id(linked);
-
-   /* Validate correct usage of barrier() in the tess control shader */
-   if (linked->Stage == MESA_SHADER_TESS_CTRL) {
-      barrier_use_visitor visitor(prog);
-      foreach_in_list(ir_instruction, ir, linked->ir) {
-         ir->accept(&visitor);
-      }
-   }
 
    return linked;
 }
@@ -4695,9 +4560,7 @@ link_varyings_and_uniforms(unsigned first, unsigned last,
       return false;
 
    update_array_sizes(prog);
-   link_assign_uniform_locations(prog, ctx->Const.UniformBooleanTrue,
-                                 num_explicit_uniform_locs,
-                                 ctx->Const.MaxUserAssignableUniformLocations);
+   link_assign_uniform_locations(prog, ctx, num_explicit_uniform_locs);
    link_assign_atomic_counter_resources(ctx, prog);
 
    link_calculate_subroutine_compat(prog);
@@ -5034,7 +4897,7 @@ link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
                                     ctx->Const.NativeIntegers))
 	 ;
 
-      lower_const_arrays_to_uniforms(prog->_LinkedShaders[i]->ir);
+      lower_const_arrays_to_uniforms(prog->_LinkedShaders[i]->ir, i);
       propagate_invariance(prog->_LinkedShaders[i]->ir);
    }
 

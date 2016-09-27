@@ -52,12 +52,18 @@ enum radeon_bo_flag { /* bitfield */
     RADEON_FLAG_GTT_WC =        (1 << 0),
     RADEON_FLAG_CPU_ACCESS =    (1 << 1),
     RADEON_FLAG_NO_CPU_ACCESS = (1 << 2),
+    RADEON_FLAG_HANDLE =        (1 << 3), /* the buffer most not be suballocated */
 };
 
 enum radeon_bo_usage { /* bitfield */
     RADEON_USAGE_READ = 2,
     RADEON_USAGE_WRITE = 4,
-    RADEON_USAGE_READWRITE = RADEON_USAGE_READ | RADEON_USAGE_WRITE
+    RADEON_USAGE_READWRITE = RADEON_USAGE_READ | RADEON_USAGE_WRITE,
+
+    /* The winsys ensures that the CS submission will be scheduled after
+     * previously flushed CSs referencing this BO in a conflicting way.
+     */
+    RADEON_USAGE_SYNCHRONIZED = 8
 };
 
 enum ring_type {
@@ -634,6 +640,9 @@ struct radeon_winsys {
 
     /**
      * Return the buffer list.
+     *
+     * This is the buffer list as passed to the kernel, i.e. it only contains
+     * the parent buffers of sub-allocated buffers.
      *
      * \param cs    Command stream
      * \param list  Returned buffer list. Set to NULL to query the count only.

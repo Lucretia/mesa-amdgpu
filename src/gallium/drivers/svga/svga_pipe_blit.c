@@ -26,6 +26,7 @@
 #include "svga_context.h"
 #include "svga_debug.h"
 #include "svga_cmd.h"
+#include "svga_format.h"
 #include "svga_resource_buffer.h"
 #include "svga_resource_texture.h"
 #include "svga_surface.h"
@@ -85,6 +86,28 @@ copy_region_vgpu10(struct svga_context *svga, struct pipe_resource *src_tex,
 }
 
 
+/**
+ * For some texture types, we need to move the z (slice) coordinate
+ * to the layer value.  For example, to select the z=3 slice of a 2D ARRAY
+ * texture, we need to use layer=3 and set z=0.
+ */
+static void
+adjust_z_layer(enum pipe_texture_target target,
+               int z_in, unsigned *layer_out, unsigned *z_out)
+{
+   if (target == PIPE_TEXTURE_CUBE ||
+       target == PIPE_TEXTURE_2D_ARRAY ||
+       target == PIPE_TEXTURE_1D_ARRAY) {
+      *layer_out = z_in;
+      *z_out = 0;
+   }
+   else {
+      *layer_out = 0;
+      *z_out = z_in;
+   }
+}
+
+
 static void
 svga_resource_copy_region(struct pipe_context *pipe,
                           struct pipe_resource *dst_tex,
@@ -135,32 +158,8 @@ svga_resource_copy_region(struct pipe_context *pipe,
    stex = svga_texture(src_tex);
    dtex = svga_texture(dst_tex);
 
-   if (src_tex->target == PIPE_TEXTURE_CUBE ||
-       src_tex->target == PIPE_TEXTURE_2D_ARRAY ||
-       src_tex->target == PIPE_TEXTURE_1D_ARRAY) {
-      src_face_layer = src_box->z;
-      src_z = 0;
-      assert(src_box->depth == 1);
-   }
-   else {
-      src_face_layer = 0;
-      src_z = src_box->z;
-   }
-
-   if (dst_tex->target == PIPE_TEXTURE_CUBE ||
-       dst_tex->target == PIPE_TEXTURE_2D_ARRAY ||
-       dst_tex->target == PIPE_TEXTURE_1D_ARRAY) {
-      dst_face_layer = dstz;
-      dst_z = 0;
-      assert(src_box->depth == 1);
-   }
-   else {
-      dst_face_layer = 0;
-      dst_z = dstz;
-   }
-
-   stex = svga_texture(src_tex);
-   dtex = svga_texture(dst_tex);
+   adjust_z_layer(src_tex->target, src_box->z, &src_face_layer, &src_z);
+   adjust_z_layer(dst_tex->target, dstz, &dst_face_layer, &dst_z);
 
    if (svga_have_vgpu10(svga)) {
       /* vgpu10 */
@@ -209,6 +208,27 @@ svga_resource_copy_region(struct pipe_context *pipe,
 
 
 /**
+ * Are the given pipe formats compatible, in terms of vgpu10's
+ * PredCopyRegion() command?
+ */
+static bool
+formats_compatible(const struct svga_screen *ss,
+                   enum pipe_format src_fmt,
+                   enum pipe_format dst_fmt)
+{
+   SVGA3dSurfaceFormat src_svga_fmt, dst_svga_fmt;
+
+   src_svga_fmt = svga_translate_format(ss, src_fmt, PIPE_BIND_SAMPLER_VIEW);
+   dst_svga_fmt = svga_translate_format(ss, dst_fmt, PIPE_BIND_SAMPLER_VIEW);
+
+   src_svga_fmt = svga_typeless_format(src_svga_fmt);
+   dst_svga_fmt = svga_typeless_format(dst_svga_fmt);
+
+   return src_svga_fmt == dst_svga_fmt;
+}
+
+
+/**
  * The state tracker implements some resource copies with blits (for
  * GL_ARB_copy_image).  This function checks if we should really do the blit
  * with a VGPU10 CopyRegion command or software fallback (for incompatible
@@ -248,11 +268,9 @@ can_blit_via_copy_region_vgpu10(struct svga_context *svga,
        blit_info->scissor_enable)
       return false;
 
-   /* check that src/dst surface formats are compatible for
-      the VGPU device.*/
-   return util_is_format_compatible(
-        util_format_description(blit_info->src.resource->format),
-        util_format_description(blit_info->dst.resource->format));
+   return formats_compatible(svga_screen(svga->pipe.screen),
+                             blit_info->src.resource->format,
+                             blit_info->dst.resource->format);
 }
 
 
@@ -275,25 +293,11 @@ svga_blit(struct pipe_context *pipe,
    if (can_blit_via_copy_region_vgpu10(svga, blit_info)) {
       unsigned src_face, src_z, dst_face, dst_z;
 
-      if (blit.src.resource->target == PIPE_TEXTURE_CUBE) {
-         src_face = blit.src.box.z;
-         src_z = 0;
-         assert(blit.src.box.depth == 1);
-      }
-      else {
-         src_face = 0;
-         src_z = blit.src.box.z;
-      }
+      adjust_z_layer(blit.src.resource->target, blit.src.box.z,
+                     &src_face, &src_z);
 
-      if (blit.dst.resource->target == PIPE_TEXTURE_CUBE) {
-         dst_face = blit.dst.box.z;
-         dst_z = 0;
-         assert(blit.src.box.depth == 1);
-      }
-      else {
-         dst_face = 0;
-         dst_z = blit.dst.box.z;
-      }
+      adjust_z_layer(blit.dst.resource->target, blit.dst.box.z,
+                     &dst_face, &dst_z);
 
       copy_region_vgpu10(svga,
                          blit.src.resource,
@@ -323,18 +327,6 @@ svga_blit(struct pipe_context *pipe,
                    util_format_short_name(blit.src.resource->format),
                    util_format_short_name(blit.dst.resource->format));
       return;
-   }
-
-   /**
-    * When there is blit from srgb to linear format or vice versa, we change
-    * src.format to srgb or linear, respectively
-    */
-
-   if (util_format_is_srgb(blit.dst.format)) {
-      blit.src.format = util_format_srgb(blit.src.format);
-   }
-   else {
-      blit.src.format = util_format_linear(blit.src.format);
    }
 
    /* XXX turn off occlusion and streamout queries */

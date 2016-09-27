@@ -545,6 +545,8 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
     pipe_mutex_destroy(ws->hyperz_owner_mutex);
     pipe_mutex_destroy(ws->cmask_owner_mutex);
 
+    if (ws->info.has_virtual_memory)
+        pb_slabs_deinit(&ws->bo_slabs);
     pb_cache_deinit(&ws->bo_cache);
 
     if (ws->gen >= DRV_R600) {
@@ -556,6 +558,7 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
     util_hash_table_destroy(ws->bo_vas);
     pipe_mutex_destroy(ws->bo_handles_mutex);
     pipe_mutex_destroy(ws->bo_va_mutex);
+    pipe_mutex_destroy(ws->bo_fence_lock);
 
     if (ws->fd >= 0)
         close(ws->fd);
@@ -758,10 +761,25 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
                   radeon_bo_destroy,
                   radeon_bo_can_reclaim);
 
+    if (ws->info.has_virtual_memory) {
+        /* There is no fundamental obstacle to using slab buffer allocation
+         * without GPUVM, but enabling it requires making sure that the drivers
+         * honor the address offset.
+         */
+        if (!pb_slabs_init(&ws->bo_slabs,
+                           RADEON_SLAB_MIN_SIZE_LOG2, RADEON_SLAB_MAX_SIZE_LOG2,
+                           12,
+                           ws,
+                           radeon_bo_can_reclaim_slab,
+                           radeon_bo_slab_alloc,
+                           radeon_bo_slab_free))
+            goto fail_cache;
+    }
+
     if (ws->gen >= DRV_R600) {
         ws->surf_man = radeon_surface_manager_new(ws->fd);
         if (!ws->surf_man)
-            goto fail;
+            goto fail_slab;
     }
 
     /* init reference */
@@ -787,6 +805,7 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
     ws->bo_vas = util_hash_table_create(handle_hash, handle_compare);
     pipe_mutex_init(ws->bo_handles_mutex);
     pipe_mutex_init(ws->bo_va_mutex);
+    pipe_mutex_init(ws->bo_fence_lock);
     ws->va_offset = ws->va_start;
     list_inithead(&ws->va_holes);
 
@@ -817,7 +836,10 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
 
     return &ws->base;
 
-fail:
+fail_slab:
+    if (ws->info.has_virtual_memory)
+        pb_slabs_deinit(&ws->bo_slabs);
+fail_cache:
     pb_cache_deinit(&ws->bo_cache);
 fail1:
     pipe_mutex_unlock(fd_tab_mutex);
